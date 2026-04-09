@@ -1,0 +1,1569 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>文本阅读器</title>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/jszip/3.1.5/jszip.min.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/epubjs/dist/epub.min.js"></script>
+    <style>
+        :root {
+            --bg-color: #ffffff; --text-color: #333333; --sidebar-bg: #f8f9fa;
+            --border-color: #e0e0e0; --font-size: 14px;
+            --font-family: 'Microsoft YaHei', sans-serif; --theme-color: #107c41;
+            --status-bg: #f1f1f1; --ghost-opacity: 1;
+        }
+        body.sepia-mode {
+            --bg-color: #f4ecd8; --text-color: #3a2e22; --sidebar-bg: #ebe0c5;
+            --border-color: #d9ceb2; --theme-color: #8b5a2b; --status-bg: #e6d8b8;
+        }
+        body { margin: 0; padding: 0; height: 100vh; background-color: var(--bg-color); color: var(--text-color); font-family: var(--font-family); overflow: hidden; display: flex; flex-direction: column; transition: background-color 0.3s, color 0.3s; }
+        
+        #toolbar { background-color: var(--sidebar-bg); border-bottom: 1px solid var(--border-color); display: flex; align-items: center; padding: 5px 10px; gap: 8px; flex-shrink: 0; flex-wrap: wrap; min-height: 40px;}
+        button, input[type="file"] { background: var(--bg-color); color: var(--text-color); border: 1px solid var(--border-color); padding: 4px 8px; cursor: pointer; border-radius: 4px; font-size: 12px; transition: all 0.2s; white-space: nowrap;}
+        button:hover { background-color: var(--border-color); }
+        .btn-primary { border-color: var(--theme-color); color: var(--theme-color); font-weight: bold; }
+        .btn-primary:hover { background-color: var(--theme-color); color: #fff; }
+        #file-input { display: none; }
+
+        #main { display: flex; flex: 1; overflow: hidden; position: relative; }
+        
+        #sidebar { 
+            position: absolute; left: 0; top: 0; height: 100%; z-index: 50;
+            width: 250px; background-color: var(--sidebar-bg); border-right: 1px solid var(--border-color); 
+            overflow-y: auto; transition: transform 0.3s ease; box-shadow: 2px 0 10px rgba(0,0,0,0.1);
+            transform: translateX(0);
+        }
+        #sidebar.collapsed { transform: translateX(-260px); box-shadow: none; }
+        
+        .toc-item { padding: 10px 15px; cursor: pointer; font-size: 13px; border-bottom: 1px dashed var(--border-color); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+        .toc-item:hover { background-color: var(--bg-color); }
+        .toc-item.active { font-weight: bold; color: var(--theme-color); border-left: 4px solid var(--theme-color); padding-left: 11px; }
+
+        #content-area { flex: 1; position: relative; overflow: hidden; display: flex; flex-direction: column; width: 100%; }
+        #txt-container { width: 100%; height: 100%; padding: 15px 5%; overflow-y: auto; line-height: 1.8; font-size: var(--font-size); box-sizing: border-box; display: none; outline: none; text-align: justify; }
+        #epub-container { width: 100%; height: 100%; display: none; }
+        
+        #welcome { display: flex; justify-content: center; align-items: center; height: 100%; flex-direction: column; padding: 20px; overflow-y: auto; }
+        .instruction-card { text-align: left; background: var(--sidebar-bg); padding: 15px 20px; border-radius: 8px; border: 1px solid var(--border-color); max-width: 600px; line-height: 1.6; font-size: 13px; box-shadow: 0 4px 15px rgba(0,0,0,0.05); }
+
+        .chapter-nav-buttons { display: flex; justify-content: space-between; margin-top: 30px; padding-top: 15px; border-top: 1px dashed var(--border-color); padding-bottom: 30px; }
+        .chapter-nav-buttons button { padding: 6px 20px; font-size: 14px; border-radius: 20px; background-color: transparent; border: 1px solid var(--text-color); }
+        .chapter-nav-buttons button:hover { background-color: var(--text-color); color: var(--bg-color); }
+
+        #status-bar { height: 26px; background-color: var(--status-bg); border-top: 1px solid var(--border-color); display: flex; justify-content: space-between; align-items: center; padding: 0 10px; font-size: 11px; color: #888; flex-shrink: 0;}
+        #status-bar span { font-family: monospace; }
+
+        /* 设置弹窗 */
+        #settings-modal { display: none; position: fixed; top: 0; left: 0; width: 100vw; height: 100vh; background: rgba(0,0,0,0.5); z-index: 10000; justify-content: center; align-items: center;}
+        .modal-content { background: var(--bg-color); color: var(--text-color); width: 90%; max-width: 380px; border-radius: 8px; padding: 15px; box-shadow: 0 4px 15px rgba(0,0,0,0.2); max-height: 85vh; overflow-y: auto;}
+        .modal-header { font-size: 15px; font-weight: bold; margin-bottom: 15px; display: flex; justify-content: space-between; }
+        .modal-header span { cursor: pointer; color: #888; padding: 0 5px; }
+        .setting-row { display: flex; justify-content: space-between; align-items: center; margin-bottom: 12px; font-size: 13px; }
+        .setting-row select, .setting-row button { padding: 4px 6px; font-size: 12px; border: 1px solid var(--border-color); background: transparent; color: inherit; border-radius: 4px; }
+        .setting-section { font-size: 12px; color: #999; margin: 10px 0 6px 0; border-top: 1px solid var(--border-color); padding-top: 8px; font-weight: bold; }
+
+        /* 幽灵模式滑块 */
+        .ghost-slider { width: 120px; accent-color: var(--theme-color); }
+
+        /* ===== 书架弹窗 ===== */
+        #bookshelf-modal { display:none; position:fixed; top:0; left:0; width:100vw; height:100vh; background:rgba(0,0,0,0.5); z-index:10001; justify-content:center; align-items:center; }
+        .bookshelf-content { background: var(--bg-color); color: var(--text-color); width:90%; max-width:500px; border-radius:8px; padding:15px; box-shadow: 0 4px 15px rgba(0,0,0,0.2); max-height:80vh; overflow-y:auto; }
+        .shelf-item { display:flex; justify-content:space-between; align-items:center; padding:10px; border-bottom:1px solid var(--border-color); cursor:pointer; transition: background 0.15s; }
+        .shelf-item:hover { background: var(--sidebar-bg); }
+        .shelf-item-info { flex:1; overflow:hidden; }
+        .shelf-item-title { font-size:14px; font-weight:bold; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
+        .shelf-item-meta { font-size:11px; color:#999; margin-top:3px; }
+        .shelf-item-actions button { margin-left:6px; font-size:11px; padding:3px 8px; color:#d9534f; border-color:#d9534f; }
+        .shelf-empty { text-align:center; padding:30px; color:#999; font-size:13px; }
+
+        /* ===== 伪装: Excel ===== */
+        #excel-mockup { display: none; position: fixed; top: 0; left: 0; width: 100vw; height: 100vh; background: #fff; z-index: 9999; flex-direction: column; }
+        .excel-grid { flex: 1; border-collapse: collapse; width: 100%; font-family: Calibri, sans-serif; font-size: 12px; color: #000; table-layout: fixed; overflow: auto; display: block;}
+        .excel-grid td, .excel-grid th { border: 1px solid #d4d4d4; padding: 4px; overflow: hidden; white-space: nowrap; text-overflow: ellipsis;}
+        .excel-grid th { background: #f3f2f1; text-align: center; font-weight: normal; color: #666;}
+        .col-A { min-width: 80px; } .col-B { min-width: 90px; } .col-C { min-width: 90px; } .col-D { min-width: 70px; } .col-E { min-width: 70px; } .col-F { min-width: 80px; } .col-G { width: 100%; min-width: 200px; }
+
+        /* ===== 伪装: 海关报关单 ===== */
+        #customs-mockup { display: none; position: fixed; top: 0; left: 0; width: 100vw; height: 100vh; background: #e8eaf6; z-index: 9999; justify-content: center; align-items: flex-start; overflow-y: auto; overflow-x: auto; padding: 10px; font-family: 'SimSun', '宋体', serif; color: #000;}
+        .customs-paper { min-width: 800px; background: #fff; padding: 20px; box-shadow: 0 4px 20px rgba(0,0,0,0.15); border: 1px solid #ccc; position: relative;}
+        .c-header { display: flex; justify-content: space-between; align-items: flex-end; margin-bottom: 8px; }
+        .c-logo { font-size: 24px; font-weight: bold; font-family: sans-serif; letter-spacing: -2px; }
+        .c-title { font-size: 22px; font-weight: bold; letter-spacing: 2px; text-align: center; flex: 1; }
+        .c-barcode { font-family: monospace; font-size: 14px; text-align: right; line-height: 1.2;}
+        .c-sub-info { display: flex; justify-content: space-between; font-size: 11px; margin-bottom: 4px; font-family: sans-serif; }
+        .c-table { width: 100%; border-collapse: collapse; border: 2px solid #000; font-size: 11px; table-layout: fixed; }
+        .c-table td { border: 1px solid #000; padding: 2px 4px; vertical-align: top; height: 30px; overflow: hidden; }
+        .c-label { color: #8b6508; font-size: 10px; display: block; margin-bottom: 2px; font-family: sans-serif; }
+        .c-data { font-size: 12px; word-break: break-all; }
+        .novel-box { height: 110px; overflow: hidden; line-height: 1.5; font-size: 12px; font-family: 'Microsoft YaHei', sans-serif; padding-top: 2px; text-align: justify;}
+        .item-header-row td { background: #fff; text-align: center; font-weight: bold; height: 20px; vertical-align: middle; }
+        .item-row td { height: 30px; text-align: center; vertical-align: middle; border-bottom: 1px dashed #666; }
+        .item-row.last-item td { border-bottom: 1px solid #000; }
+        .c-footer { display: flex; justify-content: space-between; margin-top: 4px; font-size: 11px; }
+        .c-footer-box { width: 32%; border: 1px solid #000; padding: 4px; height: 50px; position: relative; }
+        .hidden-progress { position: absolute; bottom: 2px; right: 5px; font-size: 9px; color: #666; font-family: monospace; }
+
+        /* ===== 伪装: 首饰加工工单 ===== */
+        #jewelry-form-mockup { display:none; position:fixed; top:0; left:0; width:100vw; height:100vh; background:#f5f0e8; z-index:9999; justify-content:center; align-items:flex-start; overflow-y:auto; overflow-x:auto; padding:10px; font-family:'SimSun','宋体',serif; color:#000; }
+        .jf-paper { min-width:780px; max-width:900px; background:#fff; padding:24px 28px; box-shadow:0 4px 20px rgba(0,0,0,0.12); border:1px solid #ccc; position:relative; }
+        .jf-watermark { position:absolute; top:50%; left:50%; transform:translate(-50%,-50%) rotate(-30deg); font-size:60px; color:rgba(200,170,100,0.08); font-weight:bold; letter-spacing:10px; pointer-events:none; white-space:nowrap; }
+        .jf-header { text-align:center; border-bottom:3px double #8b6508; padding-bottom:10px; margin-bottom:12px; }
+        .jf-company { font-size:18px; font-weight:bold; letter-spacing:4px; color:#8b6508; }
+        .jf-title { font-size:22px; font-weight:bold; letter-spacing:6px; margin-top:4px; }
+        .jf-subtitle { font-size:11px; color:#888; margin-top:4px; font-family:sans-serif; }
+        .jf-info-row { display:flex; justify-content:space-between; font-size:12px; margin-bottom:8px; font-family:sans-serif; }
+        .jf-info-row span { display:inline-block; }
+        .jf-table { width:100%; border-collapse:collapse; border:2px solid #8b6508; font-size:12px; }
+        .jf-table td { border:1px solid #8b6508; padding:4px 6px; vertical-align:top; }
+        .jf-table .jf-label { background:#fdf6e3; color:#8b6508; font-size:11px; width:90px; font-weight:bold; text-align:right; padding-right:8px; }
+        .jf-table .jf-val { font-size:12px; color:#333; min-width:80px; }
+        .jf-section-title { background:#8b6508; color:#fff; text-align:center; font-size:12px; font-weight:bold; letter-spacing:2px; padding:4px; }
+        .jf-novel-cell { height:100px; overflow:hidden; line-height:1.6; font-size:12px; font-family:'Microsoft YaHei',sans-serif; text-align:justify; padding:4px 6px; }
+        .jf-footer { display:flex; justify-content:space-between; margin-top:10px; font-size:11px; font-family:sans-serif; }
+        .jf-footer-box { width:32%; border:1px solid #8b6508; padding:6px; min-height:50px; position:relative; }
+        .jf-seal { position:absolute; bottom:4px; right:6px; width:50px; height:50px; border:2px solid rgba(200,0,0,0.25); border-radius:50%; display:flex; align-items:center; justify-content:center; font-size:8px; color:rgba(200,0,0,0.3); transform:rotate(-15deg); text-align:center; line-height:1.1; }
+
+        /* ===== 伪装: 机械加工派工单 ===== */
+        #factory-form-mockup { display:none; position:fixed; top:0; left:0; width:100vw; height:100vh; background:#e8edf2; z-index:9999; justify-content:center; align-items:flex-start; overflow-y:auto; overflow-x:auto; padding:10px; font-family:'SimSun','宋体',serif; color:#000; }
+        .ff-paper { min-width:780px; max-width:900px; background:#fff; padding:24px 28px; box-shadow:0 4px 20px rgba(0,0,0,0.12); border:1px solid #ccc; position:relative; }
+        .ff-watermark { position:absolute; top:50%; left:50%; transform:translate(-50%,-50%) rotate(-25deg); font-size:55px; color:rgba(0,80,160,0.06); font-weight:bold; letter-spacing:8px; pointer-events:none; white-space:nowrap; }
+        .ff-header { text-align:center; border-bottom:3px double #1a5276; padding-bottom:10px; margin-bottom:12px; }
+        .ff-company { font-size:18px; font-weight:bold; letter-spacing:4px; color:#1a5276; }
+        .ff-title { font-size:22px; font-weight:bold; letter-spacing:6px; margin-top:4px; }
+        .ff-subtitle { font-size:11px; color:#888; margin-top:4px; font-family:sans-serif; }
+        .ff-info-row { display:flex; justify-content:space-between; font-size:12px; margin-bottom:8px; font-family:sans-serif; }
+        .ff-table { width:100%; border-collapse:collapse; border:2px solid #1a5276; font-size:12px; }
+        .ff-table td { border:1px solid #1a5276; padding:4px 6px; vertical-align:top; }
+        .ff-table .ff-label { background:#eaf2f8; color:#1a5276; font-size:11px; width:95px; font-weight:bold; text-align:right; padding-right:8px; }
+        .ff-table .ff-val { font-size:12px; color:#333; min-width:80px; }
+        .ff-section-title { background:#1a5276; color:#fff; text-align:center; font-size:12px; font-weight:bold; letter-spacing:2px; padding:4px; }
+        .ff-novel-cell { height:100px; overflow:hidden; line-height:1.6; font-size:12px; font-family:'Microsoft YaHei',sans-serif; text-align:justify; padding:4px 6px; }
+        .ff-process-row td { text-align:center; height:28px; vertical-align:middle; font-size:11px; }
+        .ff-footer { display:flex; justify-content:space-between; margin-top:10px; font-size:11px; font-family:sans-serif; }
+        .ff-footer-box { width:24%; border:1px solid #1a5276; padding:6px; min-height:50px; position:relative; }
+        .ff-stamp { position:absolute; bottom:3px; right:5px; font-size:9px; color:#1a5276; font-family:monospace; opacity:0.5; }
+
+        /* ===== 伪装: VS Code ===== */
+        #vscode-mockup { display:none; position:fixed; top:0; left:0; width:100vw; height:100vh; background:#1e1e1e; z-index:9999; flex-direction:column; font-family:'Consolas','Courier New',monospace; color:#d4d4d4; font-size:13px; }
+        .vsc-titlebar { height:30px; background:#3c3c3c; display:flex; align-items:center; padding:0 10px; font-size:12px; color:#ccc; }
+        .vsc-titlebar-dots { display:flex; gap:6px; margin-right:12px; }
+        .vsc-titlebar-dots span { width:10px; height:10px; border-radius:50%; }
+        .vsc-menubar { height:28px; background:#333; display:flex; align-items:center; padding:0 8px; gap:12px; font-size:12px; color:#bbb; }
+        .vsc-menubar span:hover { color:#fff; background:#505050; padding:2px 6px; border-radius:3px; }
+        .vsc-body { display:flex; flex:1; overflow:hidden; }
+        .vsc-sidebar { width:220px; background:#252526; border-right:1px solid #3c3c3c; overflow-y:auto; flex-shrink:0; }
+        .vsc-sidebar-title { font-size:11px; text-transform:uppercase; letter-spacing:1px; padding:8px 12px; color:#888; }
+        .vsc-file-tree { padding:0 8px; }
+        .vsc-tree-item { padding:3px 8px; font-size:12px; cursor:pointer; display:flex; align-items:center; gap:6px; border-radius:3px; white-space:nowrap; }
+        .vsc-tree-item:hover { background:#2a2d2e; }
+        .vsc-tree-item.active { background:#37373d; color:#fff; }
+        .vsc-tree-folder { color:#dcb67a; }
+        .vsc-tree-file { color:#999; }
+        .vsc-editor-area { flex:1; display:flex; flex-direction:column; overflow:hidden; }
+        .vsc-tabs { height:35px; background:#252526; display:flex; align-items:flex-end; border-bottom:1px solid #3c3c3c; }
+        .vsc-tab { padding:6px 14px; font-size:12px; background:#2d2d2d; color:#888; border-right:1px solid #252526; cursor:pointer; display:flex; align-items:center; gap:6px; }
+        .vsc-tab.active { background:#1e1e1e; color:#fff; border-top:1px solid #007acc; }
+        .vsc-tab-icon { font-size:10px; }
+        .vsc-editor-content { flex:1; overflow-y:auto; padding:8px 0; background:#1e1e1e; counter-reset:line; }
+        .vsc-line { display:flex; min-height:20px; line-height:20px; padding:0 16px 0 0; font-size:13px; }
+        .vsc-line:hover { background:#2a2d2e; }
+        .vsc-line-num { width:50px; text-align:right; padding-right:16px; color:#858585; user-select:none; flex-shrink:0; font-size:12px; }
+        .vsc-line-code { flex:1; white-space:pre-wrap; word-break:break-all; }
+        .vsc-comment { color:#6a9955; }
+        .vsc-keyword { color:#569cd6; }
+        .vsc-string { color:#ce9178; }
+        .vsc-func { color:#dcdcaa; }
+        .vsc-type { color:#4ec9b0; }
+        .vsc-number { color:#b5cea8; }
+        .vsc-statusbar { height:22px; background:#007acc; display:flex; align-items:center; padding:0 10px; font-size:11px; color:#fff; justify-content:space-between; }
+        .vsc-minimap { width:60px; background:#1e1e1e; border-left:1px solid #3c3c3c; flex-shrink:0; overflow:hidden; opacity:0.4; }
+        .vsc-minimap-line { height:3px; margin:1px 4px; background:#4a4a4a; border-radius:1px; }
+
+        /* ===== 伪装: Linux Terminal ===== */
+        #terminal-mockup { display:none; position:fixed; top:0; left:0; width:100vw; height:100vh; background:#0c0c0c; z-index:9999; flex-direction:column; font-family:'Consolas','Courier New','Liberation Mono',monospace; }
+        .term-titlebar { height:32px; background:#2d2d2d; display:flex; align-items:center; padding:0 12px; justify-content:space-between; }
+        .term-titlebar-left { display:flex; align-items:center; gap:8px; }
+        .term-titlebar-dots { display:flex; gap:6px; }
+        .term-titlebar-dots span { width:10px; height:10px; border-radius:50%; }
+        .term-titlebar-title { color:#aaa; font-size:12px; }
+        .term-tabs { height:28px; background:#1e1e1e; display:flex; align-items:flex-end; border-bottom:1px solid #3c3c3c; padding:0 8px; }
+        .term-tab { padding:4px 12px; font-size:11px; color:#888; background:#2d2d2d; border-radius:4px 4px 0 0; margin-right:2px; display:flex; align-items:center; gap:6px; }
+        .term-tab.active { background:#0c0c0c; color:#ddd; }
+        .term-body { flex:1; overflow-y:auto; padding:8px 12px; color:#33ff33; font-size:13px; line-height:1.5; background:#0c0c0c; }
+        .term-line { white-space:pre-wrap; word-break:break-all; margin-bottom:1px; }
+        .term-prompt { color:#33ff33; }
+        .term-info { color:#3794ff; }
+        .term-warn { color:#cca700; }
+        .term-error { color:#f44747; }
+        .term-white { color:#cccccc; }
+        .term-timestamp { color:#666; }
+        .term-statusbar { height:22px; background:#1e1e1e; display:flex; align-items:center; padding:0 10px; font-size:11px; color:#888; justify-content:space-between; border-top:1px solid #3c3c3c; }
+
+        /* ===== 伪装: Outlook ===== */
+        #outlook-mockup { display:none; position:fixed; top:0; left:0; width:100vw; height:100vh; background:#f3f2f1; z-index:9999; flex-direction:column; font-family:'Segoe UI','Microsoft YaHei',sans-serif; color:#333; }
+        .ol-header { height:48px; background:#0078d4; display:flex; align-items:center; padding:0 16px; color:#fff; }
+        .ol-header-logo { font-size:18px; font-weight:600; margin-right:24px; display:flex; align-items:center; gap:8px; }
+        .ol-header-search { flex:1; max-width:400px; background:rgba(255,255,255,0.15); border:none; border-radius:4px; padding:6px 12px; color:#fff; font-size:13px; outline:none; }
+        .ol-header-search::placeholder { color:rgba(255,255,255,0.7); }
+        .ol-header-right { margin-left:auto; display:flex; align-items:center; gap:12px; font-size:13px; }
+        .ol-toolbar { height:40px; background:#fff; border-bottom:1px solid #edebe9; display:flex; align-items:center; padding:0 16px; gap:16px; font-size:13px; color:#333; }
+        .ol-toolbar-btn { padding:4px 10px; border-radius:3px; cursor:pointer; display:flex; align-items:center; gap:5px; }
+        .ol-toolbar-btn:hover { background:#f3f2f1; }
+        .ol-body { display:flex; flex:1; overflow:hidden; }
+        .ol-nav { width:200px; background:#f3f2f1; border-right:1px solid #edebe9; padding:8px 0; flex-shrink:0; overflow-y:auto; }
+        .ol-nav-item { padding:8px 16px; font-size:13px; cursor:pointer; display:flex; align-items:center; gap:10px; }
+        .ol-nav-item:hover { background:#e8e6e3; }
+        .ol-nav-item.active { background:#e1dfdd; font-weight:600; }
+        .ol-nav-badge { background:#0078d4; color:#fff; font-size:10px; padding:1px 6px; border-radius:10px; margin-left:auto; }
+        .ol-list { width:320px; background:#fff; border-right:1px solid #edebe9; overflow-y:auto; flex-shrink:0; }
+        .ol-list-item { padding:10px 14px; border-bottom:1px solid #f3f2f1; cursor:pointer; }
+        .ol-list-item:hover { background:#f8f7f6; }
+        .ol-list-item.active { background:#edebe9; border-left:3px solid #0078d4; }
+        .ol-list-item.unread { border-left:3px solid #0078d4; }
+        .ol-list-sender { font-size:13px; font-weight:600; display:flex; justify-content:space-between; }
+        .ol-list-date { font-size:11px; color:#888; font-weight:normal; }
+        .ol-list-subject { font-size:12px; color:#333; margin-top:2px; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
+        .ol-list-preview { font-size:11px; color:#888; margin-top:2px; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
+        .ol-reading { flex:1; background:#fff; overflow-y:auto; padding:20px 24px; min-width:0; }
+        .ol-mail-header { border-bottom:1px solid #edebe9; padding-bottom:14px; margin-bottom:14px; }
+        .ol-mail-subject { font-size:20px; font-weight:600; color:#333; margin-bottom:8px; }
+        .ol-mail-from { display:flex; align-items:center; gap:10px; }
+        .ol-mail-avatar { width:36px; height:36px; border-radius:50%; background:#0078d4; color:#fff; display:flex; align-items:center; justify-content:center; font-size:14px; font-weight:600; flex-shrink:0; }
+        .ol-mail-from-info { font-size:12px; color:#666; }
+        .ol-mail-from-name { font-size:13px; color:#333; font-weight:600; }
+        .ol-mail-body { font-size:13px; line-height:1.8; color:#333; text-align:justify; }
+
+        /* Outlook 极小窗口自适应：优先保阅读区 */
+        @media (max-width: 700px) {
+            .ol-nav { display:none; }
+            .ol-list { width:120px; min-width:120px; }
+            .ol-list-item { padding:6px 8px; }
+            .ol-list-sender { font-size:11px; }
+            .ol-list-subject { font-size:10px; }
+            .ol-list-preview { display:none; }
+            .ol-reading { padding:10px 12px; }
+            .ol-mail-subject { font-size:14px; }
+            .ol-mail-body { font-size:12px; line-height:1.6; }
+            .ol-mail-avatar { width:24px; height:24px; font-size:10px; }
+            .ol-mail-from-name { font-size:11px; }
+            .ol-mail-from-info { font-size:10px; }
+            .ol-header { padding:0 8px; }
+            .ol-header-logo { font-size:14px; margin-right:8px; }
+            .ol-header-search { display:none; }
+            .ol-header-right { font-size:11px; gap:6px; }
+            .ol-toolbar { padding:0 6px; gap:6px; font-size:11px; overflow-x:auto; }
+            .ol-toolbar-btn { padding:3px 6px; font-size:11px; }
+        }
+        @media (max-width: 480px) {
+            .ol-list { width:80px; min-width:80px; }
+            .ol-list-sender { flex-direction:column; }
+            .ol-list-subject { font-size:9px; }
+            .ol-list-date { font-size:9px; }
+            .ol-header { height:36px; }
+            .ol-toolbar { height:32px; }
+            .ol-toolbar-btn:nth-child(n+4) { display:none; }
+            .ol-reading { padding:6px 8px; }
+            .ol-mail-subject { font-size:12px; margin-bottom:4px; }
+            .ol-mail-body { font-size:11px; line-height:1.5; }
+            .ol-mail-header { padding-bottom:8px; margin-bottom:8px; }
+        }
+        @media (max-width: 360px) {
+            .ol-list { display:none; }
+            .ol-reading { padding:6px; }
+            .ol-mail-body { font-size:10px; }
+        }
+
+        @media (max-width: 500px) {
+            #txt-container { padding: 10px 10px; }
+            .setting-row { flex-direction: column; align-items: flex-start; gap: 8px; }
+            .setting-row select { width: 100%; }
+            .vsc-sidebar { width:140px; }
+        }
+    </style>
+</head>
+<body>
+
+    <div id="reader-wrapper" style="width:100%;height:100%;display:flex;flex-direction:column;position:relative;z-index:1;">
+        <div id="toolbar">
+            <button onclick="toggleSidebar()">☰ 目录</button>
+            <button class="btn-primary" onclick="document.getElementById('file-input').click()">📁 导入</button>
+            <button onclick="openBookshelf()">📚 书架</button>
+            <input type="file" id="file-input" accept=".txt,.epub">
+            <span style="flex:1"></span>
+            <span id="loading-tip" style="color:var(--theme-color);font-size:12px;display:none;">⏳ 加载中...</span>
+            <span id="ghost-indicator" style="color:#9b59b6;font-size:12px;display:none;">👻 幽灵</span>
+            <span style="color:#d9534f;font-size:12px;font-weight:bold;">[Esc 伪装]</span>
+            <button onclick="openSettings()">⚙️ 设置</button>
+        </div>
+        
+        <div id="main">
+            <div id="sidebar" class="collapsed"></div>
+            <div id="content-area">
+                <div id="welcome">
+                    <h2 style="color:var(--theme-color);margin-bottom:5px;">📖 隐蔽阅读器 V2</h2>
+                    <p style="color:#999;font-size:12px;margin:0 0 12px 0;">纯前端 · 无后端 · 单文件 · 极致伪装的职场阅读神器</p>
+                    <div class="instruction-card" style="max-width:660px;">
+
+                        <div style="display:flex;flex-wrap:wrap;gap:16px;">
+                            <div style="flex:1;min-width:260px;">
+                                <b style="color:var(--theme-color);">📚 阅读基础</b>
+                                <div style="font-size:12px;margin-top:6px;line-height:1.8;color:#555;">
+                                    • 支持 <code>.txt</code> / <code>.epub</code> 本地导入<br>
+                                    • TXT 自动识别章节生成目录（支持 GBK 容错）<br>
+                                    • EPUB 强制单页显示，屏蔽双栏排版<br>
+                                    • 滚轮 / 键盘 <code>← →</code> / 按钮 三种翻页方式<br>
+                                    • 字号 8px~36px 无级调节，极限小窗适配<br>
+                                    • 护眼羊皮纸模式 + 雅黑/宋体/楷体切换
+                                </div>
+
+                                <b style="color:var(--theme-color);display:block;margin-top:12px;">📚 本地书架</b>
+                                <div style="font-size:12px;margin-top:6px;line-height:1.8;color:#555;">
+                                    • 导入的书自动缓存到浏览器（IndexedDB）<br>
+                                    • 关掉网页重新打开，书还在<br>
+                                    • 一键续读，阅读进度自动恢复<br>
+                                    • 支持管理/删除已缓存书籍
+                                </div>
+
+                                <b style="color:#9b59b6;display:block;margin-top:12px;">👻 幽灵模式</b>
+                                <div style="font-size:12px;margin-top:6px;line-height:1.8;color:#555;">
+                                    • 整体透明度 15%~100% 无级调节<br>
+                                    • 快捷键 <code>Ctrl + 滚轮</code> 随时调节<br>
+                                    • 半透明悬浮在真实工作软件上方<br>
+                                    • 远看像屏幕反光，近看才能看清字
+                                </div>
+                            </div>
+
+                            <div style="flex:1;min-width:260px;">
+                                <b style="color:#d9534f;">🎭 伪装系统 <span style="font-size:11px;font-weight:normal;">[ Esc 一键切换 ]</span></b>
+                                <div style="font-size:12px;margin-top:6px;line-height:1.8;color:#555;">
+                                    伪装下翻页：假数据静止，只有小说文字悄悄变化
+                                </div>
+                                <div style="font-size:11px;margin-top:8px;line-height:2;color:#444;">
+                                    <span style="background:#fdf6e3;padding:2px 6px;border-radius:3px;border:1px solid #e8d9a0;">🌟 海关出口报关单</span> 1:1 复刻真实报关单<br>
+                                    <span style="background:#fdf6e3;padding:2px 6px;border-radius:3px;border:1px solid #e8d9a0;">💍 首饰加工工单</span> 珠宝行业专业表单<br>
+                                    <span style="background:#eaf2f8;padding:2px 6px;border-radius:3px;border:1px solid #b8d4e8;">🔧 机械加工派工单</span> ISO 体系工序卡<br>
+                                    <span style="background:#e8f5e9;padding:2px 6px;border-radius:3px;border:1px solid #a5d6a7;">📊 Excel: 车间排产</span>
+                                    <span style="background:#e8f5e9;padding:2px 6px;border-radius:3px;border:1px solid #a5d6a7;">📊 财务审计</span><br>
+                                    <span style="background:#e8f5e9;padding:2px 6px;border-radius:3px;border:1px solid #a5d6a7;">📊 仓储物流</span>
+                                    <span style="background:#e8f5e9;padding:2px 6px;border-radius:3px;border:1px solid #a5d6a7;">📊 首饰订单</span>
+                                    <span style="background:#e8f5e9;padding:2px 6px;border-radius:3px;border:1px solid #a5d6a7;">📊 机械订单</span><br>
+                                    <span style="background:#2d2d2d;color:#d4d4d4;padding:2px 6px;border-radius:3px;">💻 VS Code 代码编辑器</span> 小说藏在注释里<br>
+                                    <span style="background:#0c0c0c;color:#33ff33;padding:2px 6px;border-radius:3px;">🖥️ Linux 终端日志</span> 小说伪装成 syslog<br>
+                                    <span style="background:#0078d4;color:#fff;padding:2px 6px;border-radius:3px;">📧 Outlook 邮箱</span> 小说伪装成会议纪要
+                                </div>
+
+                                <b style="color:#666;display:block;margin-top:12px;">⌨️ 快捷键速查</b>
+                                <div style="font-size:12px;margin-top:6px;line-height:1.9;color:#555;">
+                                    <code style="background:#f5f5f5;padding:1px 5px;border-radius:3px;">Esc</code> 伪装 / 取消伪装<br>
+                                    <code style="background:#f5f5f5;padding:1px 5px;border-radius:3px;">← →</code> 上一页 / 下一页<br>
+                                    <code style="background:#f5f5f5;padding:1px 5px;border-radius:3px;">Ctrl+滚轮</code> 幽灵透明度调节<br>
+                                    <code style="background:#f5f5f5;padding:1px 5px;border-radius:3px;">滚轮</code> 翻页（阅读态 & 伪装态通用）
+                                </div>
+                            </div>
+                        </div>
+
+                        <div style="margin-top:14px;padding-top:10px;border-top:1px dashed var(--border-color);font-size:11px;color:#aaa;text-align:center;">
+                            开始使用 → 点击上方 <b style="color:var(--theme-color);">📁 导入</b> 选择书籍，或从 <b style="color:var(--theme-color);">📚 书架</b> 继续阅读
+                        </div>
+                    </div>
+                </div>
+                <div id="txt-container" tabindex="-1"></div>
+                <div id="epub-container"></div>
+            </div>
+        </div>
+        
+        <div id="status-bar">
+            <div id="stat-words">字数: 0 / 0</div>
+            <div id="stat-pages">进度: 0 / 0</div>
+        </div>
+    </div>
+
+    <!-- 书架弹窗 -->
+    <div id="bookshelf-modal">
+        <div class="bookshelf-content">
+            <div class="modal-header">📚 本地书架 <span onclick="closeBookshelf()">✖</span></div>
+            <div id="bookshelf-list"></div>
+        </div>
+    </div>
+
+    <!-- 设置弹窗 -->
+    <div id="settings-modal">
+        <div class="modal-content">
+            <div class="modal-header">设置 <span onclick="closeSettings()">✖</span></div>
+            <div class="setting-row"><span>护眼模式</span><button onclick="toggleTheme()">☕ 羊皮纸/白底</button></div>
+            <div class="setting-row"><span>字号 (<span id="font-size-label">14</span>px)</span><div><button onclick="changeFontSize(-2)">A-</button> <button onclick="changeFontSize(2)">A+</button></div></div>
+            <div class="setting-row"><span>阅读字体</span>
+                <select id="fontSelect" onchange="changeFont()">
+                    <option value="'Microsoft YaHei', sans-serif">微软雅黑</option>
+                    <option value="'SimSun', serif">宋体</option>
+                    <option value="'KaiTi', serif">楷体</option>
+                </select>
+            </div>
+            <div class="setting-section">👻 幽灵模式</div>
+            <div class="setting-row"><span>透明度 <span id="ghost-val">100</span>%</span><input type="range" class="ghost-slider" id="ghost-slider" min="15" max="100" value="100" oninput="setGhostOpacity(this.value)"></div>
+            <div class="setting-section">🎭 伪装模板</div>
+            <div class="setting-row">
+                <select id="camouflage-industry" style="border:1px solid #d9534f;color:#d9534f;font-weight:bold;width:100%;">
+                    <option value="customs">🌟 海关出口报关单</option>
+                    <option value="jewelry-form">💍 首饰加工工单</option>
+                    <option value="factory-form">🔧 机械加工派工单</option>
+                    <option value="mechanical">📊 Excel: 车间排产</option>
+                    <option value="finance">📊 Excel: 财务审计</option>
+                    <option value="logistics">📊 Excel: 仓储物流</option>
+                    <option value="jewelry">📊 Excel: 首饰加工订单</option>
+                    <option value="factory">📊 Excel: 机械加工订单</option>
+                    <option value="vscode">💻 VS Code 代码编辑器</option>
+                    <option value="terminal">🖥️ Linux 终端日志</option>
+                    <option value="outlook">📧 Outlook 邮箱</option>
+                </select>
+            </div>
+        </div>
+    </div>
+
+    <!-- Excel -->
+    <div id="excel-mockup">
+        <div style="height:40px;background:#217346;color:#fff;display:flex;align-items:center;padding-left:10px;font-family:'Segoe UI';font-size:13px;">
+            <span style="margin-right:15px;">▦</span> 自动保存 关 💾 &nbsp;|&nbsp; 📄 工作簿1
+        </div>
+        <div style="height:60px;background:#f3f2f1;border-bottom:1px solid #c8c6c4;"></div>
+        <div style="height:26px;background:#fff;border-bottom:1px solid #c8c6c4;display:flex;align-items:center;padding:0 10px;">
+            <span style="border:1px solid #ccc;padding:1px 8px;font-family:Calibri;font-size:12px;">G2</span>
+            <span style="margin-left:10px;margin-right:5px;color:#ccc;font-style:italic;">fx</span>
+            <input type="text" id="excel-formula-bar" style="flex:1;border:none;outline:none;font-family:Calibri;font-size:12px;" readonly>
+        </div>
+        <table class="excel-grid"><thead id="excel-thead"></thead><tbody id="excel-tbody"></tbody></table>
+    </div>
+
+    <!-- 海关单 -->
+    <div id="customs-mockup">
+        <div class="customs-paper">
+            <div class="c-header"><div class="c-logo">✈ ☤</div><div class="c-title">中华人民共和国海关出口货物报关单</div><div class="c-barcode">||| ||||||| |||| ||||| | ||<br><span style="font-size:12px;">* <span id="fake-bar-num"></span> *</span></div></div>
+            <div class="c-sub-info"><span>预录入编号: <span id="fake-pre-num"></span></span><span>海关编号: <span id="fake-cus-num"></span> (<span id="fake-port">津机场办</span>)</span><span>仅供核对用</span><span>页码/页数: 1/1</span></div>
+            <table class="c-table">
+                <tr><td colspan="2"><span class="c-label">境内发货人</span><div class="c-data">天津进出口贸易有限公司</div></td><td><span class="c-label">出境关别</span><div class="c-data" id="fake-port-2">津机场办</div></td><td><span class="c-label">出口日期</span><div class="c-data" id="fake-date"></div></td><td><span class="c-label">申报日期</span><div class="c-data" id="fake-date2"></div></td><td><span class="c-label">备案号</span><div class="c-data">----------</div></td></tr>
+                <tr><td colspan="2"><span class="c-label">境外收货人</span><div class="c-data">SAMSUNG ELECTRONICS CO., LTD.</div></td><td><span class="c-label">运输方式</span><div class="c-data">航空运输</div></td><td colspan="2"><span class="c-label">运输工具名称及航次号</span><div class="c-data">KE018/200714</div></td><td><span class="c-label">提运单号</span><div class="c-data" id="fake-bill"></div></td></tr>
+                <tr><td colspan="2"><span class="c-label">生产销售单位</span><div class="c-data">天津智能制造有限公司</div></td><td><span class="c-label">监管方式</span><div class="c-data">进料成品退换</div></td><td colspan="2"><span class="c-label">征免性质</span><div class="c-data">一般征税</div></td><td><span class="c-label">许可证号</span><div class="c-data"></div></td></tr>
+                <tr><td colspan="2"><span class="c-label">合同协议号</span><div class="c-data" id="fake-contract"></div></td><td><span class="c-label">贸易国</span><div class="c-data">韩国</div></td><td><span class="c-label">运抵国</span><div class="c-data">韩国</div></td><td><span class="c-label">指运港</span><div class="c-data">仁川</div></td><td><span class="c-label">离境口岸</span><div class="c-data">天津滨海国际机场</div></td></tr>
+                <tr><td colspan="2" style="width:25%"><span class="c-label">包装种类</span><div class="c-data">纸制或纤维板制盒/箱</div></td><td style="width:10%"><span class="c-label">件数</span><div class="c-data" id="fake-qty">5</div></td><td style="width:15%"><span class="c-label">毛重(千克)</span><div class="c-data" id="fake-gw">21.5</div></td><td style="width:15%"><span class="c-label">净重(千克)</span><div class="c-data" id="fake-nw">19.2</div></td><td style="width:15%"><span class="c-label">成交方式</span><div class="c-data">FOB</div></td><td style="width:10%"><span class="c-label">运费</span></td><td style="width:10%"><span class="c-label">保费</span></td></tr>
+                <tr><td colspan="8"><span class="c-label">随附单证及编号</span><div class="c-data">随附单证1:保税核注清单 随附单证2:代理报关委托协议</div></td></tr>
+                <tr><td colspan="8"><span class="c-label">标记唛码及备注</span><div class="c-data novel-box" id="novel-content-box"></div></td></tr>
+                <tr class="item-header-row"><td>项号</td><td>商品编号</td><td colspan="2">商品名称及规格型号</td><td>数量/单位</td><td>单价/总价</td><td>原产国/目的国</td><td>境内货源地</td></tr>
+                <tr class="item-row"><td>1</td><td>8517703000</td><td colspan="2">手机用LCD电路板</td><td>3.8千克</td><td>11.000<br>21714.00</td><td>中国<br>韩国</td><td>西青区</td></tr>
+                <tr class="item-row last-item"><td>2</td><td>8517703000</td><td colspan="2">手机用主板模块</td><td>0.5千克</td><td>25.000<br>26475.00</td><td>中国<br>韩国</td><td>西青区</td></tr>
+            </table>
+            <div class="c-footer" style="margin-top:10px;">
+                <div class="c-footer-box"><span class="c-label">报关人员: 张三</span><span class="c-label">电话: 13800138000</span><span class="c-label">申报单位: 天津报关行有限公司</span></div>
+                <div class="c-footer-box"><span class="c-label">兹申明对以上内容承担如实申报、依法纳税之法律责任</span></div>
+                <div class="c-footer-box"><span class="c-label">海关批注及签章</span><div class="hidden-progress" id="hidden-progress-box"></div></div>
+            </div>
+        </div>
+    </div>
+
+    <!-- 首饰加工工单 -->
+    <div id="jewelry-form-mockup">
+        <div class="jf-paper">
+            <div class="jf-watermark">瑞祥珠宝</div>
+            <div class="jf-header">
+                <div class="jf-company">瑞祥珠宝首饰有限公司</div>
+                <div class="jf-title">生 产 加 工 工 单</div>
+                <div class="jf-subtitle">Production Work Order &nbsp;|&nbsp; 编号自动生成，禁止涂改</div>
+            </div>
+            <div class="jf-info-row">
+                <span>工单编号: <b id="jf-order-no"></b></span>
+                <span>下单日期: <span id="jf-order-date"></span></span>
+                <span>要求交期: <span id="jf-due-date"></span></span>
+                <span>优先级: <b style="color:#d9534f;" id="jf-priority">加急</b></span>
+            </div>
+            <table class="jf-table">
+                <tr><td class="jf-label">客户名称</td><td class="jf-val" colspan="3" id="jf-client"></td><td class="jf-label">客户单号</td><td class="jf-val" id="jf-client-no"></td></tr>
+                <tr><td class="jf-label">产品品类</td><td class="jf-val" id="jf-category"></td><td class="jf-label">产品款号</td><td class="jf-val" id="jf-style-no"></td><td class="jf-label">订单数量</td><td class="jf-val" id="jf-qty"></td></tr>
+                <tr><td class="jf-label">主体材质</td><td class="jf-val" id="jf-material"></td><td class="jf-label">成色/纯度</td><td class="jf-val" id="jf-purity"></td><td class="jf-label">预估克重</td><td class="jf-val" id="jf-weight"></td></tr>
+                <tr><td class="jf-label">主石类型</td><td class="jf-val" id="jf-stone"></td><td class="jf-label">主石规格</td><td class="jf-val" id="jf-stone-spec"></td><td class="jf-label">副石/配石</td><td class="jf-val" id="jf-sub-stone"></td></tr>
+                <tr><td class="jf-label">镶嵌工艺</td><td class="jf-val" id="jf-craft1"></td><td class="jf-label">表面处理</td><td class="jf-val" id="jf-craft2"></td><td class="jf-label">电镀要求</td><td class="jf-val" id="jf-plating"></td></tr>
+                <tr><td colspan="6" class="jf-section-title">工 序 流 转</td></tr>
+                <tr><td class="jf-label">工序</td><td style="text-align:center;font-weight:bold;font-size:11px;">① 起版/CAD</td><td style="text-align:center;font-weight:bold;font-size:11px;">② 倒模铸造</td><td style="text-align:center;font-weight:bold;font-size:11px;">③ 执模打磨</td><td style="text-align:center;font-weight:bold;font-size:11px;">④ 镶嵌</td><td style="text-align:center;font-weight:bold;font-size:11px;">⑤ 抛光电镀</td></tr>
+                <tr><td class="jf-label">负责人</td><td style="text-align:center;font-size:11px;" id="jf-p1"></td><td style="text-align:center;font-size:11px;" id="jf-p2"></td><td style="text-align:center;font-size:11px;" id="jf-p3"></td><td style="text-align:center;font-size:11px;" id="jf-p4"></td><td style="text-align:center;font-size:11px;" id="jf-p5"></td></tr>
+                <tr><td class="jf-label">状态</td><td style="text-align:center;font-size:11px;color:green;" id="jf-s1">✔ 完成</td><td style="text-align:center;font-size:11px;color:green;" id="jf-s2">✔ 完成</td><td style="text-align:center;font-size:11px;color:#e67e22;" id="jf-s3">◉ 进行中</td><td style="text-align:center;font-size:11px;color:#999;" id="jf-s4">○ 待排</td><td style="text-align:center;font-size:11px;color:#999;" id="jf-s5">○ 待排</td></tr>
+                <tr><td colspan="6" class="jf-section-title">质 检 记 录 / 工 艺 备 注</td></tr>
+                <tr><td colspan="6"><div class="jf-novel-cell" id="jf-novel-box"></div></td></tr>
+            </table>
+            <div class="jf-footer">
+                <div class="jf-footer-box"><span style="font-weight:bold;">下单人:</span> 王经理<br><span style="color:#888;">签字/日期: ___________</span></div>
+                <div class="jf-footer-box"><span style="font-weight:bold;">生产主管:</span> 陈师傅<br><span style="color:#888;">签字/日期: ___________</span></div>
+                <div class="jf-footer-box"><span style="font-weight:bold;">质检确认:</span><br><span style="color:#888;">签字/日期: ___________</span><div class="jf-seal">瑞祥珠宝<br>质检专用</div></div>
+            </div>
+        </div>
+    </div>
+
+    <!-- 机械加工派工单 -->
+    <div id="factory-form-mockup">
+        <div class="ff-paper">
+            <div class="ff-watermark">鑫泰精密</div>
+            <div class="ff-header">
+                <div class="ff-company">鑫泰精密机械制造有限公司</div>
+                <div class="ff-title">机 械 加 工 派 工 单</div>
+                <div class="ff-subtitle">Machining Work Order &nbsp;|&nbsp; ISO 9001:2015 质量管理体系文件 &nbsp;|&nbsp; 编号: QR-SC-023</div>
+            </div>
+            <div class="ff-info-row">
+                <span>派工单号: <b id="ff-order-no"></b></span>
+                <span>派工日期: <span id="ff-order-date"></span></span>
+                <span>要求完工: <span id="ff-due-date"></span></span>
+                <span>紧急程度: <b style="color:#d9534f;" id="ff-priority">普通</b></span>
+            </div>
+            <table class="ff-table">
+                <tr><td class="ff-label">产品名称</td><td class="ff-val" colspan="3" id="ff-product"></td><td class="ff-label">客户/项目</td><td class="ff-val" id="ff-client"></td></tr>
+                <tr><td class="ff-label">零件图号</td><td class="ff-val" id="ff-drawing"></td><td class="ff-label">零件名称</td><td class="ff-val" id="ff-part-name"></td><td class="ff-label">版本/Rev</td><td class="ff-val" id="ff-rev"></td></tr>
+                <tr><td class="ff-label">材料牌号</td><td class="ff-val" id="ff-material"></td><td class="ff-label">毛坯规格</td><td class="ff-val" id="ff-blank"></td><td class="ff-label">加工数量</td><td class="ff-val" id="ff-qty"></td></tr>
+                <tr><td class="ff-label">公差等级</td><td class="ff-val" id="ff-tolerance"></td><td class="ff-label">表面粗糙度</td><td class="ff-val" id="ff-roughness"></td><td class="ff-label">热处理</td><td class="ff-val" id="ff-heat"></td></tr>
+                <tr><td colspan="6" class="ff-section-title">加 工 工 序 卡</td></tr>
+                <tr class="ff-process-row" style="background:#eaf2f8;font-weight:bold;"><td style="width:40px;">序号</td><td>工序名称</td><td>加工设备</td><td>工装/刀具</td><td>工时定额</td><td>自检要求</td></tr>
+                <tr class="ff-process-row" id="ff-proc1"></tr>
+                <tr class="ff-process-row" id="ff-proc2"></tr>
+                <tr class="ff-process-row" id="ff-proc3"></tr>
+                <tr class="ff-process-row" id="ff-proc4"></tr>
+                <tr class="ff-process-row" id="ff-proc5"></tr>
+                <tr><td colspan="6" class="ff-section-title">加 工 日 志 / 异 常 记 录</td></tr>
+                <tr><td colspan="6"><div class="ff-novel-cell" id="ff-novel-box"></div></td></tr>
+            </table>
+            <div class="ff-footer">
+                <div class="ff-footer-box"><span style="font-weight:bold;">编制:</span> 工艺科<br><span style="color:#888;">签字: ___________</span></div>
+                <div class="ff-footer-box"><span style="font-weight:bold;">审核:</span> 质量部<br><span style="color:#888;">签字: ___________</span></div>
+                <div class="ff-footer-box"><span style="font-weight:bold;">车间主任:</span><br><span style="color:#888;">签字: ___________</span></div>
+                <div class="ff-footer-box"><span style="font-weight:bold;">检验:</span><br><span style="color:#888;">签字: ___________</span><div class="ff-stamp" id="ff-hidden-progress"></div></div>
+            </div>
+        </div>
+    </div>
+
+    <!-- VS Code -->
+    <div id="vscode-mockup">
+        <div class="vsc-titlebar">
+            <div class="vsc-titlebar-dots"><span style="background:#ff5f57"></span><span style="background:#febc2e"></span><span style="background:#28c840"></span></div>
+            <span id="vsc-title-text">README.md — project-alpha — Visual Studio Code</span>
+        </div>
+        <div class="vsc-menubar"><span>File</span><span>Edit</span><span>Selection</span><span>View</span><span>Go</span><span>Run</span><span>Terminal</span><span>Help</span></div>
+        <div class="vsc-body">
+            <div class="vsc-sidebar">
+                <div class="vsc-sidebar-title">Explorer</div>
+                <div class="vsc-file-tree" id="vsc-file-tree"></div>
+            </div>
+            <div class="vsc-editor-area">
+                <div class="vsc-tabs">
+                    <div class="vsc-tab active"><span class="vsc-tab-icon">📄</span> README.md <span style="margin-left:8px;color:#666;font-size:10px;">×</span></div>
+                    <div class="vsc-tab"><span class="vsc-tab-icon">📄</span> config.ts <span style="margin-left:8px;color:#666;font-size:10px;">×</span></div>
+                </div>
+                <div style="display:flex;flex:1;overflow:hidden;">
+                    <div class="vsc-editor-content" id="vsc-editor-lines"></div>
+                    <div class="vsc-minimap" id="vsc-minimap"></div>
+                </div>
+            </div>
+        </div>
+        <div class="vsc-statusbar">
+            <div><span style="margin-right:14px;">⚡ main</span><span>0 ⚠ 0 ⓘ</span></div>
+            <div id="vsc-status-right"><span style="margin-right:14px;">Ln 1, Col 1</span><span style="margin-right:14px;">UTF-8</span><span>Markdown</span></div>
+        </div>
+    </div>
+
+    <!-- Linux Terminal -->
+    <div id="terminal-mockup">
+        <div class="term-titlebar">
+            <div class="term-titlebar-left">
+                <div class="term-titlebar-dots"><span style="background:#ff5f57"></span><span style="background:#febc2e"></span><span style="background:#28c840"></span></div>
+                <span class="term-titlebar-title">root@prod-server-01: ~</span>
+            </div>
+        </div>
+        <div class="term-tabs">
+            <div class="term-tab active">⬛ bash — root@prod-server-01</div>
+            <div class="term-tab">⬛ htop</div>
+        </div>
+        <div class="term-body" id="term-body"></div>
+        <div class="term-statusbar">
+            <span>root@prod-server-01</span>
+            <span id="term-status-right">bash | UTF-8 | LF</span>
+        </div>
+    </div>
+
+    <!-- Outlook -->
+    <div id="outlook-mockup">
+        <div class="ol-header">
+            <div class="ol-header-logo">✉ Outlook</div>
+            <input class="ol-header-search" placeholder="搜索邮件、联系人、文件" readonly>
+            <div class="ol-header-right"><span>🔔</span><span>⚙️</span><span style="width:28px;height:28px;border-radius:50%;background:#5c2d91;display:flex;align-items:center;justify-content:center;font-size:12px;">王</span></div>
+        </div>
+        <div class="ol-toolbar">
+            <div class="ol-toolbar-btn" style="background:#0078d4;color:#fff;border-radius:4px;padding:5px 14px;">✉ 新邮件</div>
+            <div class="ol-toolbar-btn">📎 附件</div>
+            <div class="ol-toolbar-btn">🗑 删除</div>
+            <div class="ol-toolbar-btn">📁 归档</div>
+            <div class="ol-toolbar-btn">⚡ 垃圾邮件</div>
+            <span style="flex:1"></span>
+            <div class="ol-toolbar-btn">🔽 筛选</div>
+        </div>
+        <div class="ol-body">
+            <div class="ol-nav">
+                <div class="ol-nav-item active">📥 <span>收件箱</span> <span class="ol-nav-badge" id="ol-badge">12</span></div>
+                <div class="ol-nav-item">📤 <span>已发送</span></div>
+                <div class="ol-nav-item">📝 <span>草稿箱</span></div>
+                <div class="ol-nav-item">🗑 <span>已删除</span></div>
+                <div class="ol-nav-item">⚡ <span>垃圾邮件</span></div>
+                <div class="ol-nav-item">📁 <span>归档</span></div>
+            </div>
+            <div class="ol-list" id="ol-mail-list"></div>
+            <div class="ol-reading" id="ol-reading-pane"></div>
+        </div>
+    </div>
+
+    <script>
+        // =================== 全局状态 ===================
+        let currentMode = 'light';
+        let currentFontSize = 14;
+        let book = null, rendition = null;
+        let txtChapters = [], currentChapterIndex = 0;
+        let currentFileName = '', currentFileType = '';
+        let totalTxtLength = 0, currentProgressText = "";
+        let isCamouflaged = false;
+        let ghostOpacity = 100;
+
+        const fileInput = document.getElementById('file-input');
+        const sidebar = document.getElementById('sidebar');
+        const welcomeArea = document.getElementById('welcome');
+        const txtContainer = document.getElementById('txt-container');
+        const epubContainer = document.getElementById('epub-container');
+        const statWords = document.getElementById('stat-words');
+        const statPages = document.getElementById('stat-pages');
+        const loadingTip = document.getElementById('loading-tip');
+
+        // =================== IndexedDB 书架 ===================
+        const DB_NAME = 'StealthReaderDB';
+        const DB_VER = 1;
+        const STORE_NAME = 'books';
+
+        function openDB() {
+            return new Promise((resolve, reject) => {
+                const req = indexedDB.open(DB_NAME, DB_VER);
+                req.onupgradeneeded = (e) => {
+                    const db = e.target.result;
+                    if (!db.objectStoreNames.contains(STORE_NAME)) {
+                        db.createObjectStore(STORE_NAME, { keyPath: 'name' });
+                    }
+                };
+                req.onsuccess = () => resolve(req.result);
+                req.onerror = () => reject(req.error);
+            });
+        }
+
+        async function saveBookToDB(name, type, data) {
+            const db = await openDB();
+            return new Promise((resolve, reject) => {
+                const tx = db.transaction(STORE_NAME, 'readwrite');
+                tx.objectStore(STORE_NAME).put({
+                    name, type, data,
+                    lastRead: Date.now(),
+                    size: data.byteLength || data.length || 0
+                });
+                tx.oncomplete = () => resolve();
+                tx.onerror = () => reject(tx.error);
+            });
+        }
+
+        async function getBookFromDB(name) {
+            const db = await openDB();
+            return new Promise((resolve, reject) => {
+                const tx = db.transaction(STORE_NAME, 'readonly');
+                const req = tx.objectStore(STORE_NAME).get(name);
+                req.onsuccess = () => resolve(req.result);
+                req.onerror = () => reject(req.error);
+            });
+        }
+
+        async function getAllBooks() {
+            const db = await openDB();
+            return new Promise((resolve, reject) => {
+                const tx = db.transaction(STORE_NAME, 'readonly');
+                const req = tx.objectStore(STORE_NAME).getAll();
+                req.onsuccess = () => resolve(req.result);
+                req.onerror = () => reject(req.error);
+            });
+        }
+
+        async function deleteBookFromDB(name) {
+            const db = await openDB();
+            return new Promise((resolve) => {
+                const tx = db.transaction(STORE_NAME, 'readwrite');
+                tx.objectStore(STORE_NAME).delete(name);
+                tx.oncomplete = () => resolve();
+            });
+        }
+
+        // =================== 书架 UI ===================
+        async function openBookshelf() {
+            document.getElementById('bookshelf-modal').style.display = 'flex';
+            await renderBookshelf();
+        }
+        function closeBookshelf() { document.getElementById('bookshelf-modal').style.display = 'none'; restoreFocus(); }
+
+        async function renderBookshelf() {
+            const list = document.getElementById('bookshelf-list');
+            let books = [];
+            try { books = await getAllBooks(); } catch(e) { list.innerHTML = '<div class="shelf-empty">书架功能需要浏览器支持 IndexedDB</div>'; return; }
+            books.sort((a, b) => (b.lastRead || 0) - (a.lastRead || 0));
+            if (books.length === 0) { list.innerHTML = '<div class="shelf-empty">书架空空如也～<br>导入书籍后会自动缓存到这里</div>'; return; }
+            list.innerHTML = books.map(b => {
+                const sizeStr = b.size > 1048576 ? (b.size / 1048576).toFixed(1) + 'MB' : (b.size / 1024).toFixed(0) + 'KB';
+                const dateStr = b.lastRead ? new Date(b.lastRead).toLocaleDateString() : '';
+                const progress = localStorage.getItem('novel_progress_' + b.name);
+                const pStr = progress ? ' · 有进度' : '';
+                return `<div class="shelf-item" onclick="loadFromShelf('${b.name.replace(/'/g,"\\'")}')">
+                    <div class="shelf-item-info"><div class="shelf-item-title">${b.type === 'epub' ? '📕' : '📄'} ${b.name}</div><div class="shelf-item-meta">${sizeStr} · ${dateStr}${pStr}</div></div>
+                    <div class="shelf-item-actions"><button onclick="event.stopPropagation();removeFromShelf('${b.name.replace(/'/g,"\\'")}')">删除</button></div>
+                </div>`;
+            }).join('');
+        }
+
+        async function loadFromShelf(name) {
+            closeBookshelf();
+            loadingTip.style.display = 'inline';
+            try {
+                const record = await getBookFromDB(name);
+                if (!record) { alert('书架中找不到该书'); loadingTip.style.display = 'none'; return; }
+                currentFileName = record.name;
+                welcomeArea.style.display = 'none';
+                sidebar.innerHTML = '';
+                if (record.type === 'epub') {
+                    currentFileType = 'epub';
+                    txtContainer.style.display = 'none';
+                    epubContainer.style.display = 'block';
+                    epubContainer.innerHTML = '';
+                    if (book) { book.destroy(); book = null; rendition = null; }
+                    book = ePub(record.data);
+                    initEpubRendition();
+                } else {
+                    currentFileType = 'txt';
+                    if (book) { book.destroy(); book = null; rendition = null; }
+                    txtContainer.style.display = 'block';
+                    epubContainer.style.display = 'none';
+                    const decoder = new TextDecoder('utf-8');
+                    const text = typeof record.data === 'string' ? record.data : decoder.decode(record.data);
+                    parseTxtContent(text);
+                }
+                // 更新 lastRead
+                record.lastRead = Date.now();
+                const db = await openDB();
+                const tx = db.transaction(STORE_NAME, 'readwrite');
+                tx.objectStore(STORE_NAME).put(record);
+            } catch (e) {
+                console.error(e);
+                alert('加载失败: ' + e.message);
+                loadingTip.style.display = 'none';
+            }
+        }
+
+        async function removeFromShelf(name) {
+            if (!confirm('确定从书架删除 "' + name + '"？')) return;
+            await deleteBookFromDB(name);
+            await renderBookshelf();
+        }
+
+        // =================== 幽灵模式 ===================
+        function setGhostOpacity(val) {
+            ghostOpacity = parseInt(val);
+            document.getElementById('ghost-val').innerText = ghostOpacity;
+            document.getElementById('reader-wrapper').style.opacity = ghostOpacity / 100;
+            document.getElementById('ghost-indicator').style.display = ghostOpacity < 100 ? 'inline' : 'none';
+            document.getElementById('ghost-slider').value = ghostOpacity;
+        }
+
+        // Ctrl + 滚轮 调节透明度
+        document.addEventListener('wheel', function(e) {
+            if (e.ctrlKey) {
+                e.preventDefault();
+                let newVal = ghostOpacity + (e.deltaY < 0 ? 5 : -5);
+                newVal = Math.max(15, Math.min(100, newVal));
+                setGhostOpacity(newVal);
+            }
+        }, { passive: false });
+
+        // =================== UI 基础 ===================
+        function toggleSidebar() {
+            sidebar.classList.toggle('collapsed');
+            if (currentFileType === 'epub' && rendition) setTimeout(() => rendition.resize(), 300);
+        }
+        function openSettings() { document.getElementById('settings-modal').style.display = 'flex'; }
+        function closeSettings() { document.getElementById('settings-modal').style.display = 'none'; restoreFocus(); }
+        window.onclick = function(event) {
+            if (event.target == document.getElementById('settings-modal')) closeSettings();
+            if (event.target == document.getElementById('bookshelf-modal')) closeBookshelf();
+        };
+
+        function restoreFocus() {
+            if (currentFileType === 'txt') txtContainer.focus();
+            else if (currentFileType === 'epub' && epubContainer.querySelector('iframe')) epubContainer.querySelector('iframe').contentWindow.focus();
+        }
+
+        // =================== 文件导入 ===================
+        fileInput.addEventListener('change', function(e) {
+            const file = e.target.files[0];
+            if (!file) return;
+            currentFileName = file.name;
+            welcomeArea.style.display = 'none';
+            sidebar.innerHTML = '';
+            loadingTip.style.display = 'inline';
+
+            if (file.name.endsWith('.epub')) {
+                currentFileType = 'epub';
+                // 缓存到 IndexedDB
+                const r2 = new FileReader();
+                r2.onload = async (ev) => {
+                    try { await saveBookToDB(file.name, 'epub', ev.target.result); } catch(e) { console.warn('IndexedDB save failed', e); }
+                };
+                r2.readAsArrayBuffer(file);
+                loadEpub(file);
+            } else if (file.name.endsWith('.txt')) {
+                currentFileType = 'txt';
+                loadTxt(file);
+            } else {
+                alert("仅支持 txt 和 epub 格式！");
+                loadingTip.style.display = 'none';
+            }
+        });
+
+        // =================== TXT 解析 ===================
+        function loadTxt(file) {
+            txtContainer.style.display = 'block';
+            epubContainer.style.display = 'none';
+            if (book) { book.destroy(); book = null; rendition = null; }
+            const reader = new FileReader();
+            reader.onload = async function(e) {
+                const text = e.target.result;
+                try { await saveBookToDB(file.name, 'txt', text); } catch(e) { console.warn('IndexedDB save failed', e); }
+                parseTxtContent(text);
+            };
+            reader.readAsText(file, 'utf-8');
+        }
+
+        function parseTxtContent(text) {
+            totalTxtLength = text.length;
+            const parts = text.split(/(第[0-9零一二三四五六七八九十百千万]+[章回节卷].*)/g);
+            txtChapters = [];
+            if (parts.length <= 1) {
+                txtChapters.push({ title: "正文", content: text.replace(/\n/g, '<br>'), rawLen: text.length });
+            } else {
+                if (parts[0].trim()) txtChapters.push({ title: "前言", content: parts[0].replace(/\n/g, '<br>'), rawLen: parts[0].length });
+                for (let i = 1; i < parts.length; i += 2) {
+                    let ct = parts[i + 1] || "";
+                    txtChapters.push({ title: parts[i], content: ct.replace(/\n/g, '<br>'), rawLen: ct.length });
+                }
+            }
+            sidebar.innerHTML = '';
+            txtChapters.forEach((chap, index) => {
+                let div = document.createElement('div'); div.className = 'toc-item'; div.innerText = chap.title;
+                div.onclick = () => { renderTxtChapter(index); toggleSidebar(); };
+                sidebar.appendChild(div);
+            });
+            const saved = localStorage.getItem('novel_progress_' + currentFileName);
+            if (saved) renderTxtChapter(JSON.parse(saved).index, JSON.parse(saved).scroll);
+            else renderTxtChapter(0, 0);
+            loadingTip.style.display = 'none';
+        }
+
+        function renderTxtChapter(index, scrollPos = 0) {
+            currentChapterIndex = index;
+            document.querySelectorAll('.toc-item').forEach(el => el.classList.remove('active'));
+            if (sidebar.children[index]) { sidebar.children[index].classList.add('active'); sidebar.children[index].scrollIntoView({ block: "nearest" }); }
+            let html = `<h3>${txtChapters[index].title}</h3><p>${txtChapters[index].content}</p>`;
+            html += `<div class="chapter-nav-buttons"><button onclick="goPrev()" ${index === 0 ? 'disabled' : ''}>上一章</button><button onclick="goNext()" ${index === txtChapters.length - 1 ? 'disabled' : ''}>下一章</button></div>`;
+            txtContainer.innerHTML = html;
+            statWords.innerText = `字数: ${txtChapters[index].rawLen} / ${totalTxtLength}`;
+            statPages.innerText = `章: ${index + 1} / ${txtChapters.length}`;
+            currentProgressText = `[Ch:${index + 1}/${txtChapters.length} W:${txtChapters[index].rawLen}]`;
+            setTimeout(() => { txtContainer.scrollTop = scrollPos; restoreFocus(); if (isCamouflaged) { buildCamoChunks(true); updateCamoContent(); } }, 50);
+            txtContainer.onscroll = () => localStorage.setItem('novel_progress_' + currentFileName, JSON.stringify({ index, scroll: txtContainer.scrollTop }));
+        }
+
+        // =================== EPUB 解析 ===================
+        function loadEpub(file) {
+            txtContainer.style.display = 'none';
+            epubContainer.style.display = 'block';
+            epubContainer.innerHTML = '';
+            if (book) { book.destroy(); book = null; rendition = null; }
+            book = ePub(file);
+            initEpubRendition();
+        }
+
+        function initEpubRendition() {
+            rendition = book.renderTo("epub-container", { width: "100%", height: "100%", spread: "none", minSpreadWidth: 99999, flow: "paginated" });
+            book.loaded.navigation.then(nav => {
+                sidebar.innerHTML = '';
+                nav.forEach(item => {
+                    let div = document.createElement('div'); div.className = 'toc-item'; div.innerText = item.label;
+                    div.onclick = () => { rendition.display(item.href); toggleSidebar(); };
+                    sidebar.appendChild(div);
+                });
+            });
+            book.ready.then(() => book.locations.generate(1600)).then(() => { loadingTip.style.display = 'none'; updateEpubStatusBar(); });
+            rendition.themes.default({ "body": { "column-count": "1 !important", "column-width": "auto !important" }, "p": { "max-width": "100%" } });
+            rendition.themes.register("light", { "body": { "background": "transparent", "color": "#333 !important" } });
+            rendition.themes.register("sepia", { "body": { "background": "transparent", "color": "#3a2e22 !important" } });
+            rendition.themes.select(currentMode);
+            rendition.themes.fontSize(currentFontSize + "px");
+            rendition.on('relocated', function(loc) {
+                localStorage.setItem('novel_progress_' + currentFileName, loc.start.cfi);
+                updateEpubStatusBar(loc);
+            });
+            rendition.on("rendered", function(section, view) {
+                let iframeDoc = view.document;
+                if (iframeDoc) {
+                    iframeDoc.addEventListener('wheel', handleWheelScroll, { passive: false });
+                    iframeDoc.addEventListener('keydown', handleKeyDown);
+                }
+                setTimeout(() => { restoreFocus(); if (isCamouflaged) { buildCamoChunks(); updateCamoContent(); } }, 100);
+            });
+            const saved = localStorage.getItem('novel_progress_' + currentFileName);
+            if (saved) rendition.display(saved); else rendition.display();
+        }
+
+        window.addEventListener('resize', () => { if (currentFileType === 'epub' && rendition) rendition.resize(); });
+
+        function updateEpubStatusBar(loc) {
+            loc = loc || (rendition ? rendition.currentLocation() : null);
+            if (!loc || !book.locations || book.locations.length() === 0) return;
+            let pct = Math.round(book.locations.percentageFromCfi(loc.start.cfi) * 1000) / 10;
+            let cp = book.locations.locationFromCfi(loc.start.cfi);
+            let tp = book.locations.total;
+            statWords.innerText = `进度: ${pct}%`;
+            statPages.innerText = `页码: ${cp} / ${tp}`;
+            currentProgressText = `[Pg:${cp}/${tp} ${pct}%]`;
+        }
+
+        // =================== 伪装切片引擎 ===================
+        let camoTextChunks = [], camoCurrentChunkIndex = 0, isNavigatingPrev = false;
+
+        function getNovelText() {
+            let t = "";
+            if (currentFileType === 'txt') {
+                t = txtContainer.innerText;
+            } else if (currentFileType === 'epub') {
+                try { let iframe = epubContainer.querySelector('iframe'); if (iframe && iframe.contentDocument) t = iframe.contentDocument.body.innerText; } catch (e) { }
+            }
+            return t.replace(/[\r\n]+/g, ' ').replace(/\s{2,}/g, ' ').trim();
+        }
+
+        function buildCamoChunks(forceFromStart = false) {
+            let textToRead = getNovelText();
+            let mode = document.getElementById('camouflage-industry').value;
+            camoTextChunks = [];
+
+            if (mode === 'customs' || mode === 'jewelry-form' || mode === 'factory-form') {
+                let cs = 300; 
+                for (let i = 0; i < textToRead.length; i += cs) camoTextChunks.push(textToRead.substring(i, i + cs));
+            } else if (mode === 'vscode') {
+                let lines = [];
+                for (let i = 0; i < textToRead.length; i += 70) lines.push(textToRead.substring(i, i + 70));
+                for (let i = 0; i < lines.length; i += 10) camoTextChunks.push(lines.slice(i, i + 10));
+            } else if (mode === 'terminal') {
+                let lines = [];
+                for (let i = 0; i < textToRead.length; i += 90) lines.push(textToRead.substring(i, i + 90));
+                for (let i = 0; i < lines.length; i += 10) camoTextChunks.push(lines.slice(i, i + 10));
+            } else if (mode === 'outlook') {
+                let cs = 800;
+                for (let i = 0; i < textToRead.length; i += cs) camoTextChunks.push(textToRead.substring(i, i + cs));
+            } else {
+                // Excel
+                let sentences = textToRead.match(/[^。！？]+[。！？]?/g) || [textToRead];
+                for (let i = 0; i < sentences.length; i += 35) camoTextChunks.push(sentences.slice(i, i + 35));
+            }
+
+            if (camoTextChunks.length === 0) camoTextChunks = ["（暂无阅读内容）"];
+            if (isNavigatingPrev) { camoCurrentChunkIndex = camoTextChunks.length - 1; isNavigatingPrev = false; }
+            else if (forceFromStart) camoCurrentChunkIndex = 0;
+            else camoCurrentChunkIndex = Math.min(camoCurrentChunkIndex, camoTextChunks.length - 1);
+        }
+
+        function updateCamoContent() {
+            let mode = document.getElementById('camouflage-industry').value;
+            if (mode === 'customs') updateCamoCustoms();
+            else if (mode === 'jewelry-form') updateCamoJewelryForm();
+            else if (mode === 'factory-form') updateCamoFactoryForm();
+            else if (mode === 'vscode') updateCamoVSCode();
+            else if (mode === 'terminal') updateCamoTerminal();
+            else if (mode === 'outlook') updateCamoOutlook();
+            else updateCamoExcel();
+        }
+
+        function updateCamoCustoms() {
+            let chunk = camoTextChunks[camoCurrentChunkIndex] || "";
+            if (chunk.length < 5) chunk = "常规货物，无危险品标识，符合出口检验检疫标准。";
+            document.getElementById('novel-content-box').innerText = " " + chunk;
+            document.getElementById('hidden-progress-box').innerText = `[Sys-Code: ${currentProgressText}]`;
+        }
+
+        function updateCamoExcel() {
+            let rows = camoTextChunks[camoCurrentChunkIndex] || [];
+            if (typeof rows === 'string') rows = [rows];
+            if (rows.length > 0) document.getElementById('excel-formula-bar').value = rows[0];
+            let trs = document.getElementById('excel-tbody').getElementsByTagName('tr');
+            for (let i = 0; i < trs.length; i++) {
+                let rowText = rows[i] ? rows[i].trim() : "正常";
+                let gCell = trs[i].querySelector('.col-G');
+                if (gCell) { gCell.title = rowText; gCell.innerText = "[日志] " + rowText; }
+            }
+        }
+
+        // ===== VS Code 伪装 =====
+        const fakeFileTree = [
+            { type: 'folder', name: 'src', open: true, children: [
+                { type: 'file', name: 'index.ts', icon: '🟦' },
+                { type: 'file', name: 'app.module.ts', icon: '🟦' },
+                { type: 'file', name: 'config.ts', icon: '🟦' },
+                { type: 'folder', name: 'services', open: false, children: [
+                    { type: 'file', name: 'api.service.ts', icon: '🟦' },
+                    { type: 'file', name: 'auth.service.ts', icon: '🟦' },
+                ]},
+                { type: 'folder', name: 'utils', open: false, children: [
+                    { type: 'file', name: 'helpers.ts', icon: '🟦' },
+                    { type: 'file', name: 'logger.ts', icon: '🟦' },
+                ]},
+            ]},
+            { type: 'file', name: 'README.md', icon: '📄', active: true },
+            { type: 'file', name: 'package.json', icon: '📦' },
+            { type: 'file', name: 'tsconfig.json', icon: '⚙️' },
+            { type: 'file', name: '.env', icon: '🔒' },
+            { type: 'file', name: '.gitignore', icon: '🔀' },
+        ];
+
+        function renderFileTree(items, depth = 0) {
+            return items.map(it => {
+                let pad = 'padding-left:' + (12 + depth * 14) + 'px;';
+                if (it.type === 'folder') {
+                    let arrow = it.open ? '▾' : '▸';
+                    let children = it.open ? renderFileTree(it.children, depth + 1) : '';
+                    return `<div class="vsc-tree-item vsc-tree-folder" style="${pad}">${arrow} 📁 ${it.name}</div>${children}`;
+                }
+                let cls = it.active ? 'vsc-tree-item vsc-tree-file active' : 'vsc-tree-item vsc-tree-file';
+                return `<div class="${cls}" style="${pad}">${it.icon || '📄'} ${it.name}</div>`;
+            }).join('');
+        }
+
+        function initVSCode() {
+            document.getElementById('vsc-file-tree').innerHTML = renderFileTree(fakeFileTree);
+        }
+
+        function updateCamoVSCode() {
+            let lines = camoTextChunks[camoCurrentChunkIndex] || [];
+            if (typeof lines === 'string') lines = [lines];
+
+            const fakeCodeBefore = [
+                `<span class="vsc-keyword">import</span> { <span class="vsc-type">Module</span>, <span class="vsc-type">Injectable</span> } <span class="vsc-keyword">from</span> <span class="vsc-string">'@nestjs/common'</span>;`,
+                `<span class="vsc-keyword">import</span> { <span class="vsc-type">ConfigService</span> } <span class="vsc-keyword">from</span> <span class="vsc-string">'./services/config.service'</span>;`,
+                `<span class="vsc-keyword">import</span> { <span class="vsc-type">DatabaseModule</span> } <span class="vsc-keyword">from</span> <span class="vsc-string">'./database/database.module'</span>;`,
+                `<span class="vsc-keyword">import</span> { <span class="vsc-type">Logger</span> } <span class="vsc-keyword">from</span> <span class="vsc-string">'@nestjs/common'</span>;`,
+                `<span class="vsc-keyword">import</span> { <span class="vsc-type">RedisService</span> } <span class="vsc-keyword">from</span> <span class="vsc-string">'./services/redis.service'</span>;`,
+                ``,
+                `<span class="vsc-keyword">const</span> <span class="vsc-func">APP_VERSION</span> = <span class="vsc-string">'2.4.1'</span>;`,
+                `<span class="vsc-keyword">const</span> <span class="vsc-func">MAX_RETRY</span> = <span class="vsc-number">3</span>;`,
+                `<span class="vsc-keyword">const</span> <span class="vsc-func">TIMEOUT_MS</span> = <span class="vsc-number">30000</span>;`,
+                ``,
+                `<span class="vsc-comment">/**</span>`,
+                `<span class="vsc-comment"> * @module AppModule</span>`,
+                `<span class="vsc-comment"> * @description Main application bootstrap module</span>`,
+                `<span class="vsc-comment"> * @version ${new Date().getFullYear()}.${new Date().getMonth()+1}.${new Date().getDate()}</span>`,
+            ];
+
+            const fakeCodeAfter = [
+                `<span class="vsc-comment"> */</span>`,
+                ``,
+                `@<span class="vsc-func">Module</span>({`,
+                `  <span class="vsc-func">imports</span>: [<span class="vsc-type">DatabaseModule</span>, <span class="vsc-type">CacheModule</span>],`,
+                `  <span class="vsc-func">providers</span>: [<span class="vsc-type">ConfigService</span>, <span class="vsc-type">RedisService</span>],`,
+                `})`,
+                `<span class="vsc-keyword">export</span> <span class="vsc-keyword">class</span> <span class="vsc-type">AppModule</span> <span class="vsc-keyword">implements</span> <span class="vsc-type">OnModuleInit</span> {`,
+                `  <span class="vsc-keyword">private</span> <span class="vsc-keyword">readonly</span> <span class="vsc-func">logger</span> = <span class="vsc-keyword">new</span> <span class="vsc-type">Logger</span>(<span class="vsc-string">'AppModule'</span>);`,
+                ``,
+                `  <span class="vsc-func">constructor</span>(`,
+                `    <span class="vsc-keyword">private</span> <span class="vsc-keyword">readonly</span> <span class="vsc-func">configService</span>: <span class="vsc-type">ConfigService</span>,`,
+                `    <span class="vsc-keyword">private</span> <span class="vsc-keyword">readonly</span> <span class="vsc-func">redisService</span>: <span class="vsc-type">RedisService</span>,`,
+                `  ) {}`,
+                ``,
+                `  <span class="vsc-keyword">async</span> <span class="vsc-func">onModuleInit</span>(): <span class="vsc-type">Promise</span>&lt;<span class="vsc-type">void</span>&gt; {`,
+                `    <span class="vsc-keyword">this</span>.<span class="vsc-func">logger</span>.<span class="vsc-func">log</span>(<span class="vsc-string">'Initializing application modules...'</span>);`,
+                `    <span class="vsc-keyword">const</span> <span class="vsc-func">dbStatus</span> = <span class="vsc-keyword">await</span> <span class="vsc-keyword">this</span>.<span class="vsc-func">configService</span>.<span class="vsc-func">checkDatabase</span>();`,
+                `    <span class="vsc-keyword">if</span> (!<span class="vsc-func">dbStatus</span>.<span class="vsc-func">connected</span>) {`,
+                `      <span class="vsc-keyword">throw</span> <span class="vsc-keyword">new</span> <span class="vsc-type">Error</span>(<span class="vsc-string">'Database connection failed'</span>);`,
+                `    }`,
+                `    <span class="vsc-keyword">await</span> <span class="vsc-keyword">this</span>.<span class="vsc-func">redisService</span>.<span class="vsc-func">connect</span>({`,
+                `      <span class="vsc-func">host</span>: <span class="vsc-func">process</span>.<span class="vsc-func">env</span>.<span class="vsc-func">REDIS_HOST</span> || <span class="vsc-string">'localhost'</span>,`,
+                `      <span class="vsc-func">port</span>: <span class="vsc-func">parseInt</span>(<span class="vsc-func">process</span>.<span class="vsc-func">env</span>.<span class="vsc-func">REDIS_PORT</span> || <span class="vsc-string">'6379'</span>),`,
+                `      <span class="vsc-func">retries</span>: <span class="vsc-func">MAX_RETRY</span>,`,
+                `    });`,
+                `    <span class="vsc-keyword">this</span>.<span class="vsc-func">logger</span>.<span class="vsc-func">log</span>(<span class="vsc-string">\`App v\${<span class="vsc-func">APP_VERSION</span>} started successfully\`</span>);`,
+                `  }`,
+                ``,
+                `  <span class="vsc-keyword">async</span> <span class="vsc-func">getHealthStatus</span>(): <span class="vsc-type">Promise</span>&lt;<span class="vsc-type">HealthCheck</span>&gt; {`,
+                `    <span class="vsc-keyword">const</span> <span class="vsc-func">uptime</span> = <span class="vsc-func">process</span>.<span class="vsc-func">uptime</span>();`,
+                `    <span class="vsc-keyword">const</span> <span class="vsc-func">memUsage</span> = <span class="vsc-func">process</span>.<span class="vsc-func">memoryUsage</span>();`,
+                `    <span class="vsc-keyword">return</span> {`,
+                `      <span class="vsc-func">status</span>: <span class="vsc-string">'healthy'</span>,`,
+                `      <span class="vsc-func">uptime</span>: <span class="vsc-func">Math</span>.<span class="vsc-func">floor</span>(<span class="vsc-func">uptime</span>),`,
+                `      <span class="vsc-func">memory</span>: <span class="vsc-func">memUsage</span>.<span class="vsc-func">heapUsed</span> / <span class="vsc-number">1024</span> / <span class="vsc-number">1024</span>,`,
+                `      <span class="vsc-func">version</span>: <span class="vsc-func">APP_VERSION</span>,`,
+                `    };`,
+                `  }`,
+                `}`,
+            ];
+
+            let html = '', lineNum = 1;
+            // 前段假代码
+            for (let c of fakeCodeBefore) {
+                html += `<div class="vsc-line"><span class="vsc-line-num">${lineNum++}</span><span class="vsc-line-code">${c}</span></div>`;
+            }
+            // 小说注释（仅10行）
+            for (let i = 0; i < lines.length; i++) {
+                let escaped = lines[i].replace(/</g, '&lt;').replace(/>/g, '&gt;');
+                html += `<div class="vsc-line"><span class="vsc-line-num">${lineNum++}</span><span class="vsc-line-code"><span class="vsc-comment"> * ${escaped}</span></span></div>`;
+            }
+            // 后段假代码
+            for (let c of fakeCodeAfter) {
+                html += `<div class="vsc-line"><span class="vsc-line-num">${lineNum++}</span><span class="vsc-line-code">${c}</span></div>`;
+            }
+
+            document.getElementById('vsc-editor-lines').innerHTML = html;
+            document.getElementById('vsc-status-right').innerHTML = `<span style="margin-right:14px;">Ln ${lineNum - 1}, Col 1</span><span style="margin-right:14px;">UTF-8</span><span>TypeScript</span>`;
+
+            let mm = document.getElementById('vsc-minimap'); mm.innerHTML = '';
+            let novelStart = fakeCodeBefore.length, novelEnd = novelStart + lines.length;
+            for (let i = 0; i < Math.min(lineNum, 80); i++) {
+                let w = 10 + Math.random() * 40;
+                let bg = (i >= novelStart && i < novelEnd) ? 'background:#3a5a3a;' : '';
+                mm.innerHTML += `<div class="vsc-minimap-line" style="width:${w}px;${bg}"></div>`;
+            }
+        }
+
+        // ===== Terminal 伪装 =====
+        const termPrefixes = [
+            { pre: '[INFO]', cls: 'term-info' },
+            { pre: '[DEBUG]', cls: 'term-white' },
+            { pre: '[WARN]', cls: 'term-warn' },
+            { pre: '[INFO]', cls: 'term-info' },
+            { pre: '[INFO]', cls: 'term-info' },
+            { pre: '[DEBUG]', cls: 'term-white' },
+        ];
+
+        function fakeTimestamp() {
+            let d = new Date();
+            let hh = String(d.getHours()).padStart(2, '0');
+            let mm = String(d.getMinutes()).padStart(2, '0');
+            let ss = String(Math.floor(Math.random() * 60)).padStart(2, '0');
+            let ms = String(Math.floor(Math.random() * 999)).padStart(3, '0');
+            return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')} ${hh}:${mm}:${ss}.${ms}`;
+        }
+
+        const fakeServices = ['nginx', 'app-server', 'redis', 'postgres', 'celery-worker', 'kafka', 'scheduler', 'auth-svc', 'api-gateway'];
+
+        function updateCamoTerminal() {
+            let lines = camoTextChunks[camoCurrentChunkIndex] || [];
+            if (typeof lines === 'string') lines = [lines];
+            let body = document.getElementById('term-body');
+
+            const fakeLogs = [
+                { cls:'term-info', svc:'nginx', msg:'GET /api/v2/users 200 OK - 12ms' },
+                { cls:'term-info', svc:'api-gateway', msg:'upstream response time: 0.043s, status: 200' },
+                { cls:'term-white', svc:'postgres', msg:'LOG: checkpoint starting: time' },
+                { cls:'term-white', svc:'postgres', msg:'LOG: checkpoint complete: wrote 847 buffers (5.2%)' },
+                { cls:'term-info', svc:'redis', msg:'DB 0: 15234 keys (0 volatile) in 16384 slots HT' },
+                { cls:'term-info', svc:'celery-worker', msg:'Task tasks.sync_inventory[a3f8c2] succeeded in 1.224s' },
+                { cls:'term-warn', svc:'scheduler', msg:'Job "cleanup_temp" next run: 2025-04-09 18:00:00 CST' },
+                { cls:'term-info', svc:'nginx', msg:'POST /api/v2/orders 201 Created - 45ms' },
+                { cls:'term-info', svc:'app-server', msg:'[GC] Minor GC pause: 2.1ms, heap: 234MB -> 198MB' },
+                { cls:'term-white', svc:'kafka', msg:'Fetched offset 184723 for partition orders-0' },
+                { cls:'term-info', svc:'auth-svc', msg:'Token refresh for uid=20481, ttl=3600s' },
+                { cls:'term-info', svc:'nginx', msg:'GET /api/v2/products?page=3 200 OK - 8ms' },
+                { cls:'term-warn', svc:'celery-worker', msg:'Task tasks.send_email[b7e1d9] retry: 2/3' },
+                { cls:'term-info', svc:'app-server', msg:'Request processed: orderId=ORD-20250409-8847' },
+                { cls:'term-white', svc:'redis', msg:'BGSAVE completed, 15234 keys saved to dump.rdb' },
+                { cls:'term-info', svc:'api-gateway', msg:'Rate limit check passed: client_id=svc-frontend, 42/1000' },
+                { cls:'term-info', svc:'postgres', msg:'LOG: duration: 3.291 ms  statement: SELECT * FROM audit_log LIMIT 500' },
+                { cls:'term-info', svc:'nginx', msg:'GET /static/js/app.87a3c2.js 304 Not Modified - 1ms' },
+                { cls:'term-warn', svc:'scheduler', msg:'Memory usage at 72.3%, threshold 85%' },
+                { cls:'term-info', svc:'kafka', msg:'Consumer group rebalance complete, 6 partitions assigned' },
+                { cls:'term-info', svc:'app-server', msg:'WebSocket connections: 142 active, 3 idle' },
+                { cls:'term-info', svc:'auth-svc', msg:'Session cleanup: removed 23 expired sessions' },
+                { cls:'term-white', svc:'postgres', msg:'LOG: autovacuum: table "public.events" - 1847 dead tuples removed' },
+                { cls:'term-info', svc:'celery-worker', msg:'Task tasks.generate_report[c9f2a1] succeeded in 4.891s' },
+            ];
+
+            let html = `<div class="term-line"><span class="term-prompt">[root@prod-server-01 ~]# </span><span class="term-white">tail -f /var/log/syslog | grep -v cron</span></div>`;
+            html += `<div class="term-line"><span class="term-timestamp">--- Logs begin at ${fakeTimestamp()}, following live ---</span></div>`;
+
+            // 前段假日志
+            let fIdx = 0;
+            for (let i = 0; i < 12; i++) {
+                let f = fakeLogs[fIdx++ % fakeLogs.length];
+                html += `<div class="term-line"><span class="term-timestamp">${fakeTimestamp()}</span> <span class="${f.cls}">[${f.cls === 'term-warn' ? 'WARN' : f.cls === 'term-error' ? 'ERROR' : 'INFO'}]</span> <span class="term-white">[${f.svc}]</span> <span class="term-white">${f.msg}</span></div>`;
+            }
+
+            // 中间嵌入小说（10行，伪装成 DEBUG 日志）
+            for (let i = 0; i < lines.length; i++) {
+                let escaped = lines[i].replace(/</g, '&lt;').replace(/>/g, '&gt;');
+                let svc = fakeServices[i % fakeServices.length];
+                html += `<div class="term-line"><span class="term-timestamp">${fakeTimestamp()}</span> <span class="term-info">[DEBUG]</span> <span class="term-white">[${svc}]</span> <span class="term-white">${escaped}</span></div>`;
+            }
+
+            // 后段假日志
+            for (let i = 0; i < 15; i++) {
+                let f = fakeLogs[fIdx++ % fakeLogs.length];
+                html += `<div class="term-line"><span class="term-timestamp">${fakeTimestamp()}</span> <span class="${f.cls}">[${f.cls === 'term-warn' ? 'WARN' : 'INFO'}]</span> <span class="term-white">[${f.svc}]</span> <span class="term-white">${f.msg}</span></div>`;
+            }
+
+            html += `<div class="term-line"><span class="term-prompt">[root@prod-server-01 ~]# </span><span class="term-white" style="animation:blink 1s infinite;">▋</span></div>`;
+            body.innerHTML = html;
+            body.scrollTop = body.scrollHeight;
+        }
+
+        // ===== Outlook 伪装 =====
+        const fakeSenders = [
+            { name: '张经理', avatar: '张', color: '#0078d4' },
+            { name: '李总监', avatar: '李', color: '#5c2d91' },
+            { name: '王主管', avatar: '王', color: '#107c41' },
+            { name: '赵助理', avatar: '赵', color: '#d83b01' },
+            { name: 'HR部门', avatar: 'H', color: '#008272' },
+            { name: 'IT Support', avatar: 'IT', color: '#4a154b' },
+        ];
+        const fakeSubjects = [
+            'Re: 关于Q3项目进度汇报的补充说明',
+            '会议纪要 - 产品评审会 (2025/04)',
+            'FW: 客户反馈意见整理及后续跟进安排',
+            '关于系统升级维护的通知及注意事项',
+            'Re: 供应商资质审核材料补充',
+            '本周工作计划与上周总结',
+        ];
+
+        function initOutlookList() {
+            let list = document.getElementById('ol-mail-list');
+            let html = '';
+            for (let i = 0; i < fakeSubjects.length; i++) {
+                let s = fakeSenders[i % fakeSenders.length];
+                let d = new Date(); d.setDate(d.getDate() - i);
+                let dateStr = `${d.getMonth() + 1}/${d.getDate()}`;
+                let isActive = i === 2 ? 'active' : '';
+                let isUnread = i < 2 ? 'unread' : '';
+                html += `<div class="ol-list-item ${isActive} ${isUnread}"><div class="ol-list-sender">${s.name}<span class="ol-list-date">${dateStr}</span></div><div class="ol-list-subject">${fakeSubjects[i]}</div><div class="ol-list-preview">请查看附件中的详细内容并及时反馈...</div></div>`;
+            }
+            list.innerHTML = html;
+        }
+
+        function updateCamoOutlook() {
+            let chunk = camoTextChunks[camoCurrentChunkIndex] || "";
+            if (typeof chunk !== 'string') chunk = chunk.join(' ');
+            let sender = fakeSenders[2]; // 当前选中的第3封
+            let escaped = chunk.replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/\n/g, '<br>');
+            // 将小说文本切成段落
+            let paragraphs = escaped.match(/.{1,200}/g) || [escaped];
+            let bodyHtml = paragraphs.map(p => `<p>${p}</p>`).join('');
+
+            document.getElementById('ol-reading-pane').innerHTML = `
+                <div class="ol-mail-header">
+                    <div class="ol-mail-subject">${fakeSubjects[2]}</div>
+                    <div class="ol-mail-from">
+                        <div class="ol-mail-avatar" style="background:${sender.color}">${sender.avatar}</div>
+                        <div>
+                            <div class="ol-mail-from-name">${sender.name} &lt;${sender.name.toLowerCase().replace(/\s/g, '')}@company.com&gt;</div>
+                            <div class="ol-mail-from-info">收件人: 我 &nbsp;|&nbsp; ${new Date().toLocaleDateString()} ${new Date().toLocaleTimeString()}</div>
+                        </div>
+                    </div>
+                </div>
+                <div class="ol-mail-body">
+                    <p>Hi，</p>
+                    <p>以下是本次会议详细记录及相关反馈意见汇总，请查阅：</p>
+                    <hr style="border:none;border-top:1px solid #edebe9;margin:12px 0;">
+                    ${bodyHtml}
+                    <hr style="border:none;border-top:1px solid #edebe9;margin:12px 0;">
+                    <p style="color:#888;font-size:12px;">此邮件由系统自动归档，如有疑问请联系相关负责人。</p>
+                </div>`;
+        }
+
+        // ===== 首饰加工工单 伪装 =====
+        function initJewelryForm() {
+            let rn = () => Math.floor(Math.random() * 90000 + 10000);
+            let d = new Date(), ymd = `${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,'0')}-${String(d.getDate()).padStart(2,'0')}`;
+            let due = new Date(); due.setDate(due.getDate() + Math.floor(Math.random() * 20 + 5));
+            let dueStr = `${due.getFullYear()}-${String(due.getMonth()+1).padStart(2,'0')}-${String(due.getDate()).padStart(2,'0')}`;
+
+            document.getElementById('jf-order-no').innerText = 'JWO-' + d.getFullYear() + '-' + rn();
+            document.getElementById('jf-order-date').innerText = ymd;
+            document.getElementById('jf-due-date').innerText = dueStr;
+            document.getElementById('jf-priority').innerText = ['加急','普通','特急','普通'][Math.floor(Math.random()*4)];
+
+            let clients = ['周大福','老凤祥','六福珠宝','潮宏基','周生生','谢瑞麟','Cartier代工','Tiffany代工','BVLGARI代工'];
+            document.getElementById('jf-client').innerText = clients[Math.floor(Math.random()*clients.length)];
+            document.getElementById('jf-client-no').innerText = 'CL-' + rn();
+
+            let cats = ['18K金戒指','铂金项链','925银手镯','18K玫瑰金耳钉','黄金吊坠','钻石婚戒','珍珠胸针'];
+            document.getElementById('jf-category').innerText = cats[Math.floor(Math.random()*cats.length)];
+            document.getElementById('jf-style-no').innerText = 'STY-' + String.fromCharCode(65+Math.floor(Math.random()*26)) + rn();
+            document.getElementById('jf-qty').innerText = Math.floor(Math.random()*200+10) + ' 件';
+
+            let mats = ['Au750 (18K金)','Pt950 (铂金)','Au999 (足金)','Ag925 (纯银)','Au585 (14K金)','Pd950 (钯金)'];
+            let mat = mats[Math.floor(Math.random()*mats.length)];
+            document.getElementById('jf-material').innerText = mat;
+            document.getElementById('jf-purity').innerText = mat.split('(')[0].trim();
+            document.getElementById('jf-weight').innerText = (Math.random()*15+1.5).toFixed(2) + ' g/件';
+
+            let stones = ['天然钻石 D色','天然红宝石','哥伦比亚祖母绿','缅甸蓝宝石','南洋金珠','大溪地黑珍珠','莫桑石','无主石(素圈)'];
+            document.getElementById('jf-stone').innerText = stones[Math.floor(Math.random()*stones.length)];
+            document.getElementById('jf-stone-spec').innerText = 'VVS1 ' + (Math.random()*2+0.1).toFixed(2) + 'ct / ' + (Math.random()*5+3).toFixed(1) + 'mm';
+            document.getElementById('jf-sub-stone').innerText = '碎钻 ' + Math.floor(Math.random()*40+5) + '颗 约' + (Math.random()*0.5+0.05).toFixed(2) + 'ct';
+
+            let crafts1 = ['微镶(Micro Pavé)','爪镶(Prong)','包镶(Bezel)','钉镶(Bead)','轨道镶(Channel)','群镶(Cluster)'];
+            let crafts2 = ['镜面抛光','拉丝/磨砂','喷砂','锤纹','珐琅填彩','雕花'];
+            let platings = ['白金色电镀','玫瑰金电镀','黄金色电镀','原色抛光','黑金电镀+做旧'];
+            document.getElementById('jf-craft1').innerText = crafts1[Math.floor(Math.random()*crafts1.length)];
+            document.getElementById('jf-craft2').innerText = crafts2[Math.floor(Math.random()*crafts2.length)];
+            document.getElementById('jf-plating').innerText = platings[Math.floor(Math.random()*platings.length)];
+
+            let workers = ['刘工','陈师傅','黄师傅','周工','吴师傅','郑工','林师傅','何工'];
+            for(let i=1;i<=5;i++) document.getElementById('jf-p'+i).innerText = workers[Math.floor(Math.random()*workers.length)];
+
+            let statuses = [
+                ['✔ 完成','✔ 完成','◉ 进行中','○ 待排','○ 待排'],
+                ['✔ 完成','✔ 完成','✔ 完成','◉ 进行中','○ 待排'],
+                ['✔ 完成','◉ 进行中','○ 待排','○ 待排','○ 待排'],
+            ];
+            let st = statuses[Math.floor(Math.random()*statuses.length)];
+            let stColors = {'✔ 完成':'green','◉ 进行中':'#e67e22','○ 待排':'#999'};
+            for(let i=1;i<=5;i++) { let el = document.getElementById('jf-s'+i); el.innerText = st[i-1]; el.style.color = stColors[st[i-1]]; }
+        }
+
+        function updateCamoJewelryForm() {
+            let chunk = camoTextChunks[camoCurrentChunkIndex] || "";
+            if(typeof chunk !== 'string') chunk = chunk.join(' ');
+            if(chunk.length < 5) chunk = "首件样品符合图纸要求，主石镶嵌牢固度通过拉力测试（≥3kg），电镀层厚度达标（≥0.3μm）。";
+            document.getElementById('jf-novel-box').innerText = chunk;
+        }
+
+        // ===== 机械加工派工单 伪装 =====
+        function initFactoryForm() {
+            let rn = () => Math.floor(Math.random() * 900000 + 100000);
+            let d = new Date(), ymd = `${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,'0')}-${String(d.getDate()).padStart(2,'0')}`;
+            let due = new Date(); due.setDate(due.getDate() + Math.floor(Math.random() * 15 + 3));
+            let dueStr = `${due.getFullYear()}-${String(due.getMonth()+1).padStart(2,'0')}-${String(due.getDate()).padStart(2,'0')}`;
+
+            document.getElementById('ff-order-no').innerText = 'MO-' + d.getFullYear() + rn();
+            document.getElementById('ff-order-date').innerText = ymd;
+            document.getElementById('ff-due-date').innerText = dueStr;
+            document.getElementById('ff-priority').innerText = ['普通','加急','特急','普通','普通'][Math.floor(Math.random()*5)];
+
+            let products = ['液压缸体总成','减速机传动轴','数控主轴箱体','涡轮叶片组件','精密齿轮箱','模具底板','法兰盘连接件','伺服电机端盖'];
+            let clients = ['中联重科','三一重工','徐工集团','大疆创新','比亚迪','华为技术','宁德时代','中航工业'];
+            document.getElementById('ff-product').innerText = products[Math.floor(Math.random()*products.length)];
+            document.getElementById('ff-client').innerText = clients[Math.floor(Math.random()*clients.length)];
+
+            document.getElementById('ff-drawing').innerText = 'DWG-' + String.fromCharCode(65+Math.floor(Math.random()*5)) + '-' + rn();
+            let partNames = ['传动轴','箱体盖板','齿轮轴','端面法兰','活塞杆','导轨滑块','花键套筒','偏心轮'];
+            document.getElementById('ff-part-name').innerText = partNames[Math.floor(Math.random()*partNames.length)];
+            document.getElementById('ff-rev').innerText = 'Rev.' + String.fromCharCode(65+Math.floor(Math.random()*5)) + '.' + Math.floor(Math.random()*5);
+
+            let materials = ['45#钢 (调质)','40Cr (淬火+回火)','304不锈钢','7075铝合金','Q235碳素钢','HT250灰铸铁','TC4钛合金','GCr15轴承钢'];
+            document.getElementById('ff-material').innerText = materials[Math.floor(Math.random()*materials.length)];
+            let blanks = ['Φ'+Math.floor(Math.random()*200+30)+'×'+Math.floor(Math.random()*500+50)+'mm 棒料', Math.floor(Math.random()*300+50)+'×'+Math.floor(Math.random()*200+50)+'×'+Math.floor(Math.random()*100+20)+'mm 板料'];
+            document.getElementById('ff-blank').innerText = blanks[Math.floor(Math.random()*blanks.length)];
+            document.getElementById('ff-qty').innerText = Math.floor(Math.random()*500+10) + ' 件';
+
+            let tolerances = ['IT6 (精密级)','IT7 (精密级)','IT8 (一般精密)','IT9 (一般级)','IT5 (高精密)'];
+            let roughnesses = ['Ra0.8','Ra1.6','Ra3.2','Ra0.4','Ra6.3'];
+            let heats = ['整体淬火 HRC45-50','调质处理 HRC28-32','渗碳淬火 HRC58-62','去应力退火','氮化处理 HV850+','无'];
+            document.getElementById('ff-tolerance').innerText = tolerances[Math.floor(Math.random()*tolerances.length)];
+            document.getElementById('ff-roughness').innerText = roughnesses[Math.floor(Math.random()*roughnesses.length)];
+            document.getElementById('ff-heat').innerText = heats[Math.floor(Math.random()*heats.length)];
+
+            // 工序卡
+            let processes = [
+                ['粗车外圆','CA6140车床','三爪卡盘+顶尖','15 min/件','外径游标卡尺 ±0.05'],
+                ['精车端面','CK6150数控车','软爪+中心架','20 min/件','千分尺 ±0.01'],
+                ['铣键槽','XK7132立铣','平口钳+键槽铣刀','12 min/件','键槽塞规 H7'],
+                ['钻孔攻丝','Z3040摇臂钻','钻模+丝锥M12','8 min/件','螺纹通止规'],
+                ['磨削精加工','M1432外圆磨','磁力吸盘+砂轮','25 min/件','外径千分尺 ±0.005'],
+            ];
+            let altProcesses = [
+                ['下料','G4028带锯','虎钳夹具','5 min/件','长度钢尺 ±1mm'],
+                ['CNC粗铣','VMC850立加','组合夹具+Φ20铣刀','30 min/件','三坐标抽检'],
+                ['CNC精铣','DMG-HSC55','真空吸盘+Φ6球刀','45 min/件','轮廓度 ±0.02'],
+                ['线切割','DK7740慢走丝','专用工装','60 min/件','投影仪检测'],
+                ['钳工去毛刺','手工','锉刀+油石','10 min/件','目视+触感检查'],
+            ];
+            let procs = Math.random() > 0.5 ? processes : altProcesses;
+            for(let i=1;i<=5;i++) {
+                let p = procs[i-1];
+                document.getElementById('ff-proc'+i).innerHTML = `<td>${i*10}</td><td>${p[0]}</td><td>${p[1]}</td><td>${p[2]}</td><td>${p[3]}</td><td>${p[4]}</td>`;
+            }
+        }
+
+        function updateCamoFactoryForm() {
+            let chunk = camoTextChunks[camoCurrentChunkIndex] || "";
+            if(typeof chunk !== 'string') chunk = chunk.join(' ');
+            if(chunk.length < 5) chunk = "首件检验合格，尺寸公差在图纸范围内，表面粗糙度达标。批量生产过程中第37件发现外圆跳动超差0.02mm，已调整顶尖压力后恢复正常。";
+            document.getElementById('ff-novel-box').innerText = chunk;
+            document.getElementById('ff-hidden-progress').innerText = `[QC: ${currentProgressText}]`;
+        }
+
+        // =================== 伪装翻页 ===================
+        function handleCamoNext() {
+            if (camoCurrentChunkIndex < camoTextChunks.length - 1) { camoCurrentChunkIndex++; updateCamoContent(); }
+            else { if (currentFileType === 'txt') goNext(); else if (currentFileType === 'epub' && rendition) rendition.next(); }
+        }
+        function handleCamoPrev() {
+            if (camoCurrentChunkIndex > 0) { camoCurrentChunkIndex--; updateCamoContent(); }
+            else { isNavigatingPrev = true; if (currentFileType === 'txt') goPrev(); else if (currentFileType === 'epub' && rendition) rendition.prev(); }
+        }
+
+        // =================== 翻页 & 滚轮 ===================
+        function goPrev() { if (currentFileType === 'txt' && currentChapterIndex > 0) renderTxtChapter(currentChapterIndex - 1, 0); else if (currentFileType === 'epub' && rendition) rendition.prev(); }
+        function goNext() { if (currentFileType === 'txt' && currentChapterIndex < txtChapters.length - 1) renderTxtChapter(currentChapterIndex + 1, 0); else if (currentFileType === 'epub' && rendition) rendition.next(); }
+
+        let isWheeling = false;
+        function handleWheelScroll(e) {
+            if (e.ctrlKey) return; // Ctrl+滚轮留给幽灵模式
+            if (document.getElementById('settings-modal').style.display === 'flex') return;
+            if (document.getElementById('bookshelf-modal').style.display === 'flex') return;
+            e.preventDefault();
+            if (isWheeling) return;
+            isWheeling = true;
+            if (isCamouflaged) { if (e.deltaY > 0) handleCamoNext(); else if (e.deltaY < 0) handleCamoPrev(); }
+            else { if (e.deltaY > 0) goNext(); else if (e.deltaY < 0) goPrev(); }
+            setTimeout(() => { isWheeling = false; }, 300);
+        }
+        epubContainer.addEventListener('wheel', handleWheelScroll, { passive: false });
+        document.getElementById('customs-mockup').addEventListener('wheel', handleWheelScroll, { passive: false });
+        document.getElementById('jewelry-form-mockup').addEventListener('wheel', handleWheelScroll, { passive: false });
+        document.getElementById('factory-form-mockup').addEventListener('wheel', handleWheelScroll, { passive: false });
+        document.getElementById('excel-mockup').addEventListener('wheel', handleWheelScroll, { passive: false });
+        document.getElementById('vscode-mockup').addEventListener('wheel', handleWheelScroll, { passive: false });
+        document.getElementById('terminal-mockup').addEventListener('wheel', handleWheelScroll, { passive: false });
+        document.getElementById('outlook-mockup').addEventListener('wheel', handleWheelScroll, { passive: false });
+
+        // =================== 设置 ===================
+        function toggleTheme() {
+            currentMode = currentMode === 'light' ? 'sepia' : 'light';
+            if (currentMode === 'sepia') document.body.classList.add('sepia-mode');
+            else document.body.classList.remove('sepia-mode');
+            if (rendition) rendition.themes.select(currentMode);
+        }
+        function changeFontSize(delta) {
+            currentFontSize = Math.max(8, Math.min(36, currentFontSize + delta));
+            document.getElementById('font-size-label').innerText = currentFontSize;
+            document.documentElement.style.setProperty('--font-size', currentFontSize + 'px');
+            if (rendition) { rendition.themes.fontSize(currentFontSize + "px"); book.locations.generate(1600).then(() => updateEpubStatusBar()); }
+        }
+        function changeFont() { let f = document.getElementById('fontSelect').value; document.documentElement.style.setProperty('--font-family', f); if (rendition) rendition.themes.font(f); }
+
+        // =================== 假数据引擎 ===================
+        function initCustomsStaticData() {
+            let rn = () => Math.floor(Math.random() * 900000000 + 100000000);
+            document.getElementById('fake-bar-num').innerText = "0207" + rn() + Math.floor(Math.random() * 10000);
+            document.getElementById('fake-pre-num').innerText = "0207" + rn() + Math.floor(Math.random() * 100);
+            document.getElementById('fake-cus-num').innerText = "0207" + rn() + Math.floor(Math.random() * 100);
+            let t = new Date(), ymd = `${t.getFullYear()}${String(t.getMonth() + 1).padStart(2, '0')}${String(t.getDate()).padStart(2, '0')}`;
+            document.getElementById('fake-date').innerText = ymd;
+            document.getElementById('fake-date2').innerText = ymd;
+            document.getElementById('fake-contract').innerText = "PO" + rn();
+            document.getElementById('fake-bill').innerText = "AWB" + rn();
+            let gw = (Math.random() * 500 + 50).toFixed(1);
+            document.getElementById('fake-gw').innerText = gw;
+            document.getElementById('fake-nw').innerText = (gw * 0.85).toFixed(1);
+            document.getElementById('fake-qty').innerText = Math.floor(Math.random() * 50 + 5);
+        }
+
+        const excelTemplates = {
+            mechanical: { headers: ['工单号', '加工车间', '设备编号', '耗时(H)', '质检状态', '操作员', '异常/备注报备'], data: [() => 'WO2024' + Math.floor(Math.random() * 1000), () => ['冲压车间', '数控一区', '五轴机房'][Math.floor(Math.random() * 3)], () => 'CNC-' + Math.floor(Math.random() * 50), () => (Math.random() * 10 + 0.5).toFixed(1), () => ['首件合格', '巡检异常'][Math.floor(Math.random() * 2)], () => ['张工', '李师傅'][Math.floor(Math.random() * 2)]] },
+            logistics: { headers: ['入库单号', '货物区域', '物料类型', '托盘编号', '重量(KG)', '库存状态', '盘点记录反馈'], data: [() => 'IN-' + Math.floor(Math.random() * 10000000), () => ['A区-高架', 'B区-平库'][Math.floor(Math.random() * 2)], () => ['标准件', '原材料', '包材'][Math.floor(Math.random() * 3)], () => 'PLT-' + Math.floor(Math.random() * 5000), () => (Math.random() * 500).toFixed(2), () => ['在库', '出库中'][Math.floor(Math.random() * 2)]] },
+            finance: { headers: ['凭证号', '入账日期', '会计科目', '借贷方向', '金额(元)', '经办人', '归档描述/摘要'], data: [() => 'PZ' + Math.floor(Math.random() * 10000000), () => '2024/05/1' + Math.floor(Math.random() * 9), () => ['主营业务收入', '应付账款', '银行存款'][Math.floor(Math.random() * 3)], () => Math.random() > 0.5 ? '借' : '贷', () => (Math.random() * 50000).toFixed(2), () => ['赵出纳', '钱会计'][Math.floor(Math.random() * 2)]] },
+            jewelry: { headers: ['订单编号', '客户名称', '品类/工艺', '材质/克重', '镶嵌主石', '交期', '工艺备注/质检'], data: [() => 'JW' + new Date().getFullYear() + '-' + Math.floor(Math.random() * 90000 + 10000), () => ['周大福', '老凤祥', '六福珠宝', '潮宏基', '周生生', '谢瑞麟', 'Tiffany代工'][Math.floor(Math.random() * 7)], () => ['18K金戒指/微镶', '铂金项链/编织链', '925银手镯/珐琅', '18K玫瑰金耳钉/爪镶', '黄金吊坠/花丝', '钻石婚戒/群镶'][Math.floor(Math.random() * 6)], () => ['Au750/' + (Math.random() * 8 + 2).toFixed(2) + 'g', 'Pt950/' + (Math.random() * 12 + 3).toFixed(2) + 'g', 'Ag925/' + (Math.random() * 20 + 5).toFixed(2) + 'g', 'Au999/' + (Math.random() * 15 + 4).toFixed(2) + 'g'][Math.floor(Math.random() * 4)], () => ['D-VVS1 0.' + Math.floor(Math.random() * 90 + 10) + 'ct', '红宝石 0.' + Math.floor(Math.random() * 50 + 30) + 'ct', '祖母绿 0.' + Math.floor(Math.random() * 80 + 20) + 'ct', '珍珠 ' + Math.floor(Math.random() * 4 + 7) + 'mm', '蓝宝石 1.' + Math.floor(Math.random() * 50) + 'ct', '无主石/素圈'][Math.floor(Math.random() * 6)], () => { let d = new Date(); d.setDate(d.getDate() + Math.floor(Math.random() * 30 + 5)); return (d.getMonth() + 1) + '/' + d.getDate(); }] },
+            factory: { headers: ['派工单号', '零件图号', '加工工序', '设备/机床', '加工数量', '完成状态', '工时记录/异常'], data: [() => 'MO-' + new Date().getFullYear() + Math.floor(Math.random() * 900000 + 100000), () => ['DWG-A' + Math.floor(Math.random() * 999 + 100), 'DWG-B' + Math.floor(Math.random() * 999 + 100), 'DWG-C' + Math.floor(Math.random() * 999 + 100)][Math.floor(Math.random() * 3)], () => ['粗车外圆→精车', '铣平面→钻孔攻丝', '线切割成型', '磨削精加工', '热处理→回火', 'CNC精铣轮廓', '镗孔→珩磨'][Math.floor(Math.random() * 7)], () => ['DMG-CTX500', 'MAZAK-QT200', 'FANUC-α-C600', 'HAAS-VF2', '沈阳CAK6140', '北一XK7132', '瑞士Studer-S33'][Math.floor(Math.random() * 7)], () => Math.floor(Math.random() * 200 + 10) + '件', () => ['已完工', '加工中', '待排产', '质检中', '返工'][Math.floor(Math.random() * 5)]] }
+        };
+
+        function initExcelData(key) {
+            let tbody = document.getElementById('excel-tbody'), thead = document.getElementById('excel-thead');
+            tbody.innerHTML = '';
+            let tpl = excelTemplates[key];
+            thead.innerHTML = `<tr><th></th><th class="col-A">A</th><th class="col-B">B</th><th class="col-C">C</th><th class="col-D">D</th><th class="col-E">E</th><th class="col-F">F</th><th class="col-G">G</th></tr><tr><th>1</th>${tpl.headers.map((h, i) => `<td class="col-${'ABCDEFG'[i]}" style="font-weight:bold;background:#f9f9f9;">${h}</td>`).join('')}</tr>`;
+            for (let i = 0; i < 35; i++) {
+                let tr = document.createElement('tr');
+                tr.innerHTML = `<th>${i + 2}</th>${tpl.data.map((fn, j) => `<td class="col-${'ABCDEF'[j]}">${fn()}</td>`).join('')}<td class="col-G"></td>`;
+                tbody.appendChild(tr);
+            }
+        }
+
+        // =================== 伪装入口 / 隐藏所有 ===================
+        const allMockups = ['excel-mockup', 'customs-mockup', 'jewelry-form-mockup', 'factory-form-mockup', 'vscode-mockup', 'terminal-mockup', 'outlook-mockup'];
+        function hideAllMockups() { allMockups.forEach(id => document.getElementById(id).style.display = 'none'); }
+
+        const camoTitles = {
+            customs: '单一窗口 - 报关单申报系统',
+            'jewelry-form': '首饰生产管理系统 - 工单详情',
+            'factory-form': '生产管理MES - 派工单',
+            mechanical: '工作簿1 - Excel',
+            finance: '工作簿1 - Excel',
+            logistics: '工作簿1 - Excel',
+            jewelry: '首饰加工订单管理 - Excel',
+            factory: '生产派工单台账 - Excel',
+            vscode: 'README.md — project-alpha — Visual Studio Code',
+            terminal: 'root@prod-server-01: ~',
+            outlook: '邮件 - Outlook',
+        };
+
+        // =================== 键盘主控 ===================
+        function handleKeyDown(e) {
+            if (e.key === 'Escape') {
+                isCamouflaged = !isCamouflaged;
+                closeSettings();
+                let mode = document.getElementById('camouflage-industry').value;
+
+                if (isCamouflaged) {
+                    isNavigatingPrev = false;
+                    buildCamoChunks(true);
+                    hideAllMockups();
+
+                    if (mode === 'customs') {
+                        initCustomsStaticData();
+                        document.getElementById('customs-mockup').style.display = 'flex';
+                    } else if (mode === 'jewelry-form') {
+                        initJewelryForm();
+                        document.getElementById('jewelry-form-mockup').style.display = 'flex';
+                    } else if (mode === 'factory-form') {
+                        initFactoryForm();
+                        document.getElementById('factory-form-mockup').style.display = 'flex';
+                    } else if (mode === 'vscode') {
+                        initVSCode();
+                        document.getElementById('vscode-mockup').style.display = 'flex';
+                    } else if (mode === 'terminal') {
+                        document.getElementById('terminal-mockup').style.display = 'flex';
+                    } else if (mode === 'outlook') {
+                        initOutlookList();
+                        document.getElementById('outlook-mockup').style.display = 'flex';
+                    } else {
+                        initExcelData(mode);
+                        document.getElementById('excel-mockup').style.display = 'flex';
+                    }
+                    updateCamoContent();
+                    document.title = camoTitles[mode] || '工作簿1 - Excel';
+                } else {
+                    hideAllMockups();
+                    document.title = "文本阅读器";
+                    restoreFocus();
+                }
+                return;
+            }
+
+            if (document.getElementById('settings-modal').style.display !== 'flex' && document.getElementById('bookshelf-modal').style.display !== 'flex') {
+                if (e.key === 'ArrowRight') { if (isCamouflaged) handleCamoNext(); else goNext(); e.preventDefault(); }
+                else if (e.key === 'ArrowLeft') { if (isCamouflaged) handleCamoPrev(); else goPrev(); e.preventDefault(); }
+            }
+        }
+        document.addEventListener('keydown', handleKeyDown);
+
+        // 闪烁动画（终端光标）
+        let styleTag = document.createElement('style');
+        styleTag.textContent = `@keyframes blink { 0%,50% { opacity:1; } 51%,100% { opacity:0; } }`;
+        document.head.appendChild(styleTag);
+    </script>
+</body>
+</html>
